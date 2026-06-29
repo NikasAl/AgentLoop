@@ -1,85 +1,162 @@
 # AgentLoop
 
-Adaptive pipeline system with hypothesis-driven pipeline optimization.
+Адаптивная система пайплайнов с гипотезо-ориентированной оптимизацией.
 
-## Status
+## Статус
 
-🚧 **Early development** — Provider Layer (Day 1-2 of MVP plan).
+🚧 **Ранняя разработка** — Provider Layer + Tool Catalog (День 1-3 MVP плана).
 
-## Goals
+## Цели
 
-- Universal adaptive pipeline system (not domain-specific)
-- Multiple LLM providers: local (llama-server), OpenRouter, Z.AI, Human-as-API (via subl)
-- Hypothesis generation → DAG building → execution → evaluation → distillation
-- Token/cost tracking with per-task budgets
-- Skill Library for reusable pipelines
-- Research / Production mode separation
+- Универсальная адаптивная система пайплайнов (не привязана к домену)
+- Несколько LLM-провайдеров: локальный (llama-server), OpenRouter, Z.AI, Human-as-API (через subl)
+- Генерация гипотез → построение DAG → выполнение → оценка → дистилляция
+- Учёт токенов и стоимости с бюджетами per-task
+- Skill Library для переиспользуемых пайплайнов
+- Разделение режимов Research / Production
 
-## Architecture overview
+## Обзор архитектуры
 
-See `design/` directory for detailed format specifications and worked examples
-across two domains (math extraction from PDF, poetry generation).
+См. директорию `design/` — подробные спецификации форматов и проработанные примеры
+на двух доменах (извлечение задач из PDF, написание стихов).
 
-### Layer 1 — Core Tools (always in Builder's context)
+### Layer 1 — Базовые инструменты (всегда в контексте Builder'а)
 
-| Tool | Description |
+| Инструмент | Описание |
 |---|---|
-| `bash_run` | Shell command in sandbox with timeout |
-| `python_run` | Python script (core or custom via Steward) |
-| `llm_call` | LLM via Provider Layer (local/openrouter/zai/human) |
-| `wait_human` | Human input via subl + clipboard |
-| `web_search` | Semantic web search |
-| `web_fetch` | Fetch URL with parsing (HTML→markdown, PDF→text) |
-| `file_op` | First-class file operations (read/write/append/list/move/copy) |
+| `bash_run` | Shell-команда в sandbox с timeout |
+| `python_run` | Python-скрипт (core или custom через Steward) |
+| `llm_call` | LLM через Provider Layer (local/openrouter/zai/human) |
+| `wait_human` | Человеческий ввод через subl + clipboard |
+| `web_search` | Семантический веб-поиск |
+| `web_fetch` | Загрузка URL с парсингом (HTML→markdown, PDF→text) |
+| `file_op` | Файловые операции как first-class (read/write/append/list/move/copy) |
 
-### Provider Tiers
+### Уровни провайдеров
 
-| Tier | Use case | Examples |
+| Уровень | Назначение | Примеры |
 |---|---|---|
-| 0 — Local | Bulk work, free | `local:gemma-4-26b` (llama-server) |
-| 1 — Cheap API | Routine meta-agents | `gemini-3.1-flash-lite`, `glm-4.7-flash`, `mistral-small` |
-| 2 — Mid API | Hypothesis gen, builder, judge | `gemini-3.1-flash`, `glm-5-turbo`, `deepseek-v3` |
-| 3 — Strong API | Distillation teacher | `gemini-3.1-pro`, `glm-5.2`, `deepseek-r1` |
-| ∞ — Human | Debug, expensive teacher | `human:browser` (subl + clipboard) |
+| 0 — Локальный | Основная работа, бесплатно | `local:gemma-4-26b` (llama-server) |
+| 1 — Дешёвый API | Рутина и meta-агенты | `gemini-3.1-flash-lite`, `glm-4.7-flash`, `mistral-small` |
+| 2 — Средний API | Hypothesis gen, builder, judge | `gemini-3.1-flash`, `glm-5-turbo`, `deepseek-v3` |
+| 3 — Сильный API | Дистилляция-учитель | `gemini-3.1-pro`, `glm-5.2`, `deepseek-r1` |
+| ∞ — Человек | Отладка, дорогой учитель | `human:browser` (subl + clipboard) |
 
-## Project structure
+### Слои инструментов
+
+| Слой | Что содержит | Как пополняется |
+|---|---|---|
+| Layer 1 | 7 базовых примитивов | Захардкожено в коде |
+| Layer 2 | Системные утилиты (pdftoppm, tesseract, ffmpeg, ...) | Сканирование PATH + pip list при старте |
+| Layer 3 | Custom Python-инструменты | Создаётся Builder'ом через Steward с safety-check |
+
+Steward — гибрид function + agent:
+- **Function** (без LLM) — ищет по каталогу, координирует установку пакетов
+- **Agent** (LLM) — включается если function не нашла, предлагает composite-решения
+
+## Структура проекта
 
 ```
 agentloop/
-├── design/             # Format specifications and worked examples
+├── design/             # Спецификации форматов и примеры
 ├── src/
 │   └── agentloop/
-│       ├── providers/  # Provider Layer (4 providers)
+│       ├── providers/  # Provider Layer (4 провайдера)
+│       ├── tools/      # Tool Catalog + Steward
 │       ├── cost_tracker.py
-│       └── models.yaml # Curated model list
+│       └── models.yaml # Кураторский список моделей
 └── tests/
 ```
 
-## Current module: Provider Layer
+## Текущий модуль: Provider Layer + Tool Catalog
 
-### Usage
+### Использование провайдеров
 
 ```python
-from agentloop.providers import get_provider
-from agentloop.providers.base import Message, Response
+from agentloop.providers import get_provider, Message
 
-provider = get_provider("local")  # or "openrouter", "zai", "human"
-response = provider.chat(
-    messages=[Message(role="user", content="Hello")],
-    model="gemma-4-26b",
+# Локальная модель (бесплатно)
+local = get_provider("local")  # → http://turbo:8080
+resp = local.chat([Message(role="user", content="Привет")], model="gemma-4-26b")
+
+# OpenRouter (с API key в env)
+or_p = get_provider("openrouter")
+resp = or_p.chat([Message(role="user", content="Hello")], model="google/gemini-3.1-flash")
+
+# Human-as-API (для debug и дистилляции)
+human = get_provider("human")
+resp = human.chat(
+    [Message(role="user", content="...")],
+    model="browser",
+    node_id="distill_teacher",
+    reason="Заполни ответ от Gemini Pro",
 )
-print(response.content)
-print(f"Cost: ${response.cost_usd:.6f}")
-print(f"Tokens: {response.input_tokens} in / {response.output_tokens} out")
 ```
 
-### Providers
+### Использование Tool Catalog
 
-- **local** — Connects to llama-server (e.g., `http://turbo:8080`)
-- **openrouter** — OpenRouter API with curated models
-- **zai** — Z.AI API (GLM models)
-- **human** — Opens subl, copies prompt to clipboard, waits for user response
+```python
+from agentloop.tools import ToolCatalog, Steward
 
-## License
+catalog = ToolCatalog()
+catalog.scan_system()  # сканирует PATH и pip list, заполняет Layer 2
+
+# Поиск инструмента
+result = catalog.search("извлечение текста из PDF")
+for tool in result.found:
+    print(f"{tool.name}: {tool.description}")
+
+# Steward — с LLM-агентом для сложных запросов
+steward = Steward(catalog=catalog, llm_provider=local)
+result = steward.search("нормализовать LaTeX: \\frac → \\cfrac, проверка скобок")
+# если function не нашёл — steward-agent предложит custom Python
+```
+
+### Провайдеры
+
+- **local** — подключение к llama-server (например, `http://turbo:8080`)
+- **openrouter** — OpenRouter API с курируемым списком моделей
+- **zai** — Z.AI API (GLM-модели) с retry-логикой для 429
+- **human** — открывает subl, копирует промпт в буфер обмена, ждёт ответ
+
+## Особенности OS
+
+Проект разрабатывается и тестируется на **Arch Linux**. При сканировании Layer 2
+учитываются особенности:
+- `pacman` как пакетный менеджер (а не `apt`)
+- Имена пакетов могут отличаться от Debian/Ubuntu (например, `poppler` вместо `poppler-utils`)
+- AUR поддерживается через `yay` (если установлен)
+- `python-pip` для Python-пакетов
+
+Для других дистрибутивов — в `known_tools.yaml` указаны альтернативные имена пакетов.
+
+## Установка
+
+```bash
+git clone https://github.com/NikasAl/AgentLoop.git
+cd AgentLoop
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Запуск тестов
+pytest tests/ -v
+```
+
+## Переменные окружения
+
+```bash
+# API ключи (опционально для соответствующих провайдеров)
+export OPENROUTER_API_KEY="sk-or-..."
+export ZAI_API_KEY="..."
+
+# URL локального llama-server (по умолчанию http://turbo:8080)
+export LOCAL_LLM_URL="http://turbo:8080"
+
+# Редактор для HumanProvider (по умолчанию subl)
+export EDITOR="subl"
+```
+
+## Лицензия
 
 MIT

@@ -1,0 +1,294 @@
+# Описания известных Linux-утилит для Layer 2.
+# install.managers — словарь с именами пакетов для разных пакетных менеджеров.
+# На Arch Linux: pacman (имена часто без -utils суффикса).
+# На Debian/Ubuntu: apt.
+# На Fedora/RHEL: dnf.
+
+tools:
+  # ─── PDF ─────────────────────────────────────────────────
+  - name: pdftoppm
+    category: pdf
+    description: "Конвертирует PDF в PNG/PPM изображения постранично. Используется для vision-LLM."
+    input_schema:
+      pdf_path: string
+      dpi: int
+      output_dir: string
+    output_schema:
+      images: files
+      pattern: "page-*.png"
+    example_usage: "pdftoppm -png -r 300 input.pdf output_dir/page"
+    keywords: [pdf, convert, image, png, ppm, poppler]
+    install:
+      pacman: poppler
+      apt: poppler-utils
+      dnf: poppler-utils
+      brew: poppler
+    install_notes: "На Arch: pacman -S poppler. На Debian: apt install poppler-utils."
+
+  - name: pdftotext
+    category: pdf
+    description: "Извлекает plain text из PDF. Быстро, но плохо работает со сканами."
+    input_schema:
+      pdf_path: string
+      output_path: string
+    output_schema:
+      text: string
+    example_usage: "pdftotext input.pdf output.txt"
+    keywords: [pdf, text, extract, poppler]
+    install:
+      pacman: poppler
+      apt: poppler-utils
+      dnf: poppler-utils
+
+  - name: pdfimages
+    category: pdf
+    description: "Извлекает изображения из PDF (как отдельные файлы)."
+    input_schema:
+      pdf_path: string
+      output_dir: string
+    output_schema:
+      images: files
+    example_usage: "pdfimages -all input.pdf output_dir/img"
+    keywords: [pdf, images, extract, poppler]
+    install:
+      pacman: poppler
+      apt: poppler-utils
+
+  - name: pdfinfo
+    category: pdf
+    description: "Метаданные PDF (страницы, размер, шрифты)."
+    input_schema:
+      pdf_path: string
+    output_schema:
+      metadata: dict
+    example_usage: "pdfinfo input.pdf"
+    keywords: [pdf, info, metadata, poppler]
+    install:
+      pacman: poppler
+      apt: poppler-utils
+
+  - name: mutool
+    category: pdf
+    description: "MuPDF — быстрый PDF toolkit. cleaner, draw, extract, merge."
+    input_schema:
+      pdf_path: string
+      command: string
+    example_usage: "mutool clean input.pdf output.pdf"
+    keywords: [pdf, mupdf, clean, extract]
+    install:
+      pacman: mupdf-tools
+      apt: mupdf-tools
+      dnf: mupdf
+
+  - name: qpdf
+    category: pdf
+    description: "PDF manipulation: split, merge, rotate, encrypt."
+    input_schema:
+      input_pdf: string
+      output_pdf: string
+    example_usage: "qpdf --split-pages input.pdf output_%d.pdf"
+    keywords: [pdf, split, merge, encrypt]
+    install:
+      pacman: qpdf
+      apt: qpdf
+
+  - name: ghostscript
+    category: pdf
+    description: "PostScript/PDF interpreter. Сжатие, конвертация, оптимизация PDF."
+    example_usage: "gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -o output.pdf input.pdf"
+    keywords: [pdf, postscript, gs, compress]
+    aliases: [gs]
+    install:
+      pacman: ghostscript
+      apt: ghostscript
+
+  # ─── LaTeX ───────────────────────────────────────────────
+  - name: pdflatex
+    category: math
+    description: "Компилятор LaTeX в PDF. Используется для валидации LaTeX-кода."
+    input_schema:
+      tex_file: string
+    output_schema:
+      pdf_file: string
+      log: string
+      exit_code: int
+    example_usage: "pdflatex -interaction=nonstopmode input.tex"
+    keywords: [latex, tex, compile, pdf]
+    install:
+      pacman: texlive-basic
+      apt: texlive-latex-base
+      dnf: texlive
+    install_notes: "На Arch для полного набора: texlive-most. Минимально: texlive-basic."
+
+  - name: latexmk
+    category: math
+    description: "Автоматический сборщик LaTeX документов (несколько прогонов для ссылок)."
+    example_usage: "latexmk -pdf document.tex"
+    keywords: [latex, build, make]
+    install:
+      pacman: texlive-latexextra
+      apt: latexmk
+
+  # ─── OCR ─────────────────────────────────────────────────
+  - name: tesseract
+    category: text
+    description: "OCR — распознавание текста на изображениях. Поддерживает русский через tesseract-data-rus."
+    input_schema:
+      image_path: string
+      language: string
+    output_schema:
+      text: string
+    example_usage: "tesseract image.png output -l rus+eng"
+    keywords: [ocr, recognize, text, image, scan]
+    install:
+      pacman: tesseract
+      apt: tesseract-ocr
+      dnf: tesseract
+    install_notes: "Для русского: pacman -S tesseract-data-rus (Arch) или apt install tesseract-ocr-rus (Debian)."
+
+  # ─── Images ──────────────────────────────────────────────
+  - name: convert
+    category: image
+    description: "ImageMagick — конвертация и обработка изображений."
+    input_schema:
+      input_image: string
+      output_image: string
+      options: string
+    example_usage: "convert input.png -resize 50% output.png"
+    keywords: [image, convert, imagemagick, resize, format]
+    install:
+      pacman: imagemagick
+      apt: imagemagick
+      dnf: ImageMagick
+
+  - name: magick
+    category: image
+    description: "ImageMagick v7 (новый синтаксис, заменяет convert)."
+    example_usage: "magick input.png -resize 50% output.png"
+    keywords: [image, imagemagick, v7]
+    install:
+      pacman: imagemagick
+      apt: imagemagick
+
+  # ─── Audio/Video ─────────────────────────────────────────
+  - name: ffmpeg
+    category: video
+    description: "Конвертация и обработка аудио/видео. Мощный инструмент для media pipeline."
+    input_schema:
+      input_file: string
+      output_file: string
+      options: string
+    example_usage: "ffmpeg -i input.mp4 -vn -acodec mp3 output.mp3"
+    keywords: [audio, video, convert, ffmpeg, media]
+    install:
+      pacman: ffmpeg
+      apt: ffmpeg
+      dnf: ffmpeg
+
+  - name: ffprobe
+    category: video
+    description: "Метаданные медиафайлов (длительность, кодеки, разрешение)."
+    example_usage: 'ffprobe -v error -show_format -show_streams -of json input.mp4'
+    keywords: [audio, video, metadata, probe]
+    install:
+      pacman: ffmpeg
+      apt: ffmpeg
+
+  - name: sox
+    category: audio
+    description: "SoX — Sound eXchange. Конвертация и эффекты для аудио."
+    example_usage: "sox input.wav output.wav speed 1.5"
+    keywords: [audio, sound, convert, effects]
+    install:
+      pacman: sox
+      apt: sox
+
+  # ─── Text/Markdown ───────────────────────────────────────
+  - name: pandoc
+    category: text
+    description: "Универсальный конвертер текстовых форматов (Markdown, HTML, LaTeX, DOCX, PDF)."
+    input_schema:
+      input_file: string
+      output_format: string
+    output_schema:
+      output: string
+    example_usage: "pandoc input.md -o output.pdf"
+    keywords: [text, markdown, convert, latex, docx, html]
+    install:
+      pacman: pandoc
+      apt: pandoc
+      dnf: pandoc
+
+  - name: jq
+    category: text
+    description: "Парсер и фильтр JSON для командной строки."
+    example_usage: "echo '{\"a\":1}' | jq .a"
+    keywords: [json, parse, filter, cli]
+    install:
+      pacman: jq
+      apt: jq
+
+  - name: yq
+    category: text
+    description: "Парсер YAML (аналог jq для YAML)."
+    example_usage: "yq '.key' input.yaml"
+    keywords: [yaml, parse, filter]
+    install:
+      pacman: yq
+      apt: yq
+
+  # ─── Office ──────────────────────────────────────────────
+  - name: libreoffice
+    category: text
+    description: "LibreOffice в headless-режиме. Конвертация DOCX/XLSX/PPTX."
+    example_usage: "libreoffice --headless --convert-to pdf input.docx"
+    keywords: [office, docx, xlsx, convert, headless]
+    aliases: [soffice]
+    install:
+      pacman: libreoffice-fresh
+      apt: libreoffice
+      dnf: libreoffice
+
+  # ─── Network ─────────────────────────────────────────────
+  - name: curl
+    category: network
+    description: "HTTP-клиент для командной строки. Загрузка файлов, API-запросы."
+    example_usage: "curl -s https://api.example.com/data | jq ."
+    keywords: [http, request, download, api]
+    install:
+      pacman: curl
+      apt: curl
+
+  - name: wget
+    category: network
+    description: "Загрузчик файлов по HTTP/HTTPS/FTP. Поддерживает recursive download."
+    example_usage: "wget https://example.com/file.pdf"
+    keywords: [http, download, ftp]
+    install:
+      pacman: wget
+      apt: wget
+
+  # ─── System / Package managers ───────────────────────────
+  - name: pacman
+    category: system
+    description: "Пакетный менеджер Arch Linux. Установка системных утилит."
+    example_usage: "sudo pacman -S poppler"
+    keywords: [arch, package, install]
+    available_only_on: [arch]
+
+  - name: yay
+    category: system
+    description: "AUR helper для Arch Linux. Пакеты из Arch User Repository."
+    example_usage: "yay -S some-aur-package"
+    keywords: [arch, aur, package]
+    available_only_on: [arch]
+
+  - name: pip
+    category: python
+    description: "Python package installer. Для Python-библиотек (pylatexenc, sympy, ...)."
+    example_usage: "pip install pylatexenc sympy"
+    keywords: [python, pip, install, package]
+    aliases: [pip3]
+    install:
+      pacman: python-pip
+      apt: python3-pip
