@@ -1,0 +1,164 @@
+{
+  "_comment": "Hypothesis Generator output. 3 гипотезы для задачи извлечения задач из Сканави. Формат: Maшиночитаемый JSON, но rationale — на естественном языке для человека.",
+
+  "task_id": "scanavi_extract_research_001",
+  "task_description": "Извлечь математические задачи из задачника Сканави в LaTeX. Качество оценивается по coverage (все ли задачи найдены) и latex_validity (компилируется ли).",
+  "sample_input": {
+    "path": "/data/scanavi/scanavi.pdf",
+    "page_num": 47,
+    "description": "Страница 47, раздел 'Алгебраические уравнения'"
+  },
+  "user_constraints": {
+    "budget_usd_per_iteration": 0.50,
+    "max_latency_sec_per_page": 300,
+    "prefer_local": true,
+    "human_time_budget_per_iteration_sec": 600
+  },
+  "user_hint": null,
+
+  "hypotheses": [
+    {
+      "id": "h1",
+      "title": "Single-pass vision extraction с локальной Gemma 4 26B",
+      "rationale": "Gemma 4 26B имеет vision и reasoning, может в одном вызове извлечь все задачи сразу. Локально (бесплатно), просто, потенциал к 95%+ accuracy при правильном промпте. Уже тестировалось пользователем на 1 странице — давало 85%+, ошибки исправимы промптом.",
+
+      "approach": [
+        "Конвертировать PDF страницу в PNG через pdftoppm (300 dpi)",
+        "Один LLM-вызов к локальной Gemma 4 26B с vision: изображение → задачи в LaTeX как JSON",
+        "Валидировать каждый LaTeX через pylatexenc (проверка скобок, parse)",
+        "Для невалидного — повторный LLM-вызов с промптом-исправлением, показывая конкретную ошибку"
+      ],
+
+      "model_assignments": [
+        {"role": "extractor", "model": "local:gemma-4-26b", "reason": "vision + reasoning, бесплатно, 20 tok/s на отдельном сервере"},
+        {"role": "fixer", "model": "local:gemma-4-26b", "reason": "та же модель для консистентности"}
+      ],
+
+      "custom_tools_needed": [
+        {
+          "purpose": "Валидация LaTeX и выявление конкретных ошибок (незакрытые скобки, неверная вложенность)",
+          "proposed_name": "latex_validator_v1",
+          "type": "python",
+          "estimated_dependencies": ["pylatexenc>=2.0"],
+          "steward_request_hint": "нужен LaTeX parser с детальной диагностикой ошибок"
+        }
+      ],
+
+      "estimated": {
+        "tokens_per_page": 2000,
+        "latency_per_page_sec": 75,
+        "cost_per_page_usd": 0.0,
+        "expected_quality": "medium-high",
+        "confidence_in_estimate": "low — нужна первая итерация для baseline"
+      },
+
+      "risks": [
+        "может пропустить маленькие задачи в подвале страницы",
+        "сложные многоэтажные дроби могут ломаться без явной инструкции про \\cfrac",
+        "без верификации ответов объективная оценка качества невозможна",
+        "локальная модель 20 tok/s — узкое место по latency"
+      ],
+
+      "test_sample_size": 1,
+      "user_hint": null
+    },
+
+    {
+      "id": "h2",
+      "title": "Decomposed: pdftotext → Gemma 4 text → LaTeX formatter",
+      "rationale": "Текстовое извлечение через pdftotext детерминированно и мгновенно. Gemma 4 работает с текстом быстрее, чем с vision. НО: качество pdftotext на сканах плохое, а Сканави — скан старой книги.",
+
+      "approach": [
+        "pdftotext извлекает текст страницы (детерминированно, 1 сек)",
+        "LLM-вызов: парсит текст, выделяет номера задач и условия",
+        "LLM-вызов: конвертирует каждое условие в LaTeX",
+        "Валидация LaTeX, retry при ошибках"
+      ],
+
+      "model_assignments": [
+        {"role": "parser", "model": "local:gemma-4-26b", "reason": "текст, reasoning, дёшево"},
+        {"role": "latex_formatter", "model": "local:gemma-4-26b", "reason": "та же модель"},
+        {"role": "fixer", "model": "local:gemma-4-26b", "reason": "та же модель"}
+      ],
+
+      "custom_tools_needed": [],
+
+      "estimated": {
+        "tokens_per_page": 3500,
+        "latency_per_page_sec": 180,
+        "cost_per_page_usd": 0.0,
+        "expected_quality": "low (Сканави — скан, pdftotext потеряет формулы)",
+        "confidence_in_estimate": "medium"
+      },
+
+      "risks": [
+        "pdftotext плохо работает со сканами (а Сканави — скан)",
+        "больше вызовов = больше мест для ошибки",
+        "потеря визуальной информации (формулы могут не распознаться)",
+        "вероятно хуже h1 на этой задаче, но может оказаться полезным для текстовых PDF"
+      ],
+
+      "test_sample_size": 1,
+      "user_hint": null
+    },
+
+    {
+      "id": "h3",
+      "title": "Single-pass + human-as-API teacher для дистилляции промпта",
+      "rationale": "Если h1 даёт недостаточное качество — добавить дистилляцию: человек через браузерный Gemini 3.1 Pro создаёт образцовый ответ, система сравнивает с ответом Gemma 4 и улучшает промпт. Стоимость $0, но требует человеческого времени (~3 мин на страницу). Подходит только для research-режима.",
+
+      "approach": [
+        "Запустить h1 на странице — получить baseline extraction",
+        "Human-as-API: открыть subl, человек вставляет ответ от Gemini Pro из браузера",
+        "Сравнить два ответа через task_list_differ (custom tool)",
+        "LLM-анализ divergences → улучшенный промпт",
+        "Перетестировать h1 с новым промптом"
+      ],
+
+      "model_assignments": [
+        {"role": "extractor", "model": "local:gemma-4-26b", "reason": "target для дистилляции"},
+        {"role": "teacher", "model": "human:browser", "reason": "бесплатно, любая сильная модель в браузере"},
+        {"role": "divergence_analyzer", "model": "local:gemma-4-26b", "reason": "LLM-as-judge для сравнения"}
+      ],
+
+      "custom_tools_needed": [
+        {
+          "purpose": "Сравнение двух списков задач: matching по номерам, diff по LaTeX с нормализацией через sympy",
+          "proposed_name": "task_list_differ_v1",
+          "type": "python",
+          "estimated_dependencies": ["sympy>=1.12"]
+        }
+      ],
+
+      "estimated": {
+        "tokens_per_page": 4500,
+        "latency_per_page_sec": 300,
+        "cost_per_page_usd": 0.0,
+        "human_time_per_page_sec": 180,
+        "expected_quality": "high (после дистилляции)",
+        "confidence_in_estimate": "low"
+      },
+
+      "risks": [
+        "требует человеческого времени (3 минуты на страницу)",
+        "если образцовый ответ от Gemini тоже с ошибками — дистилляция ухудшит результат",
+        "медленный, не подходит для production (только research)",
+        "сравнение LaTeX нетривиально (\\frac vs \\cfrac — одно и то же)"
+      ],
+
+      "test_sample_size": 1,
+      "user_hint": "попробовать сначала h1, и только если score < 0.90 — запускать h3"
+    }
+  ],
+
+  "metadata": {
+    "generated_by": "HypothesisGenerator",
+    "model": "local:gemma-4-26b",
+    "generated_at": "2026-06-29T14:00:00Z",
+    "generation_tokens": 1850,
+    "generation_cost_usd": 0.0,
+    "generation_latency_sec": 92,
+    "history_aware": true,
+    "previous_attempts_considered": 0
+  }
+}

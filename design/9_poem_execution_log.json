@@ -1,0 +1,482 @@
+{
+  "_comment": "Execution log для прогона DAG из 8_poem_dag.json. Демонстрирует: collection outputs (3 стиха), параллельные judge-узлы, human-as-API через subl, loop refinement, gate с 4 режимами, субъективные метрики.",
+
+  "run_id": "run_2026-06-29_16-30-00_p1",
+  "task_id": "poem_generation_research_001",
+  "hypothesis_id": "p1",
+  "dag_version": "0.2",
+  "mode": "research",
+  "started_at": "2026-06-29T16:30:00Z",
+  "completed_at": "2026-06-29T17:18:45Z",
+  "status": "completed_with_human_modifications",
+  "wall_time_sec": 2925,
+
+  "environment": {
+    "input_theme": "Одиночество в большом городе",
+    "work_dir": "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/",
+    "cli_host": "arch-laptop",
+    "local_model_server": "turbo:8080 (gemma-4-26b)",
+    "openrouter_models_used": ["gemini-3.1-flash"],
+    "human_provider_used": true,
+    "hitl_mode": "manual"
+  },
+
+  "node_executions": [
+    {
+      "node_id": "generate_poems_parallel",
+      "type": "llm",
+      "model": "local:gemma-4-26b",
+      "started_at": "2026-06-29T16:30:05Z",
+      "completed_at": "2026-06-29T16:42:30Z",
+      "duration_sec": 745,
+      "status": "success",
+      "iterations": 3,
+      "input_tokens_total": 3600,
+      "output_tokens_total": 4200,
+      "cost_usd": 0.0,
+      "output_summary": {
+        "poems_generated": 3,
+        "variant_ids": ["v1_seed1", "v2_seed2", "v3_seed3"],
+        "avg_length_lines": 14
+      },
+      "output_file": "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/generated_poems.json",
+      "poem_excerpts": [
+        {"variant_id": "v1_seed1", "first_line": "В вагоне — лица без имён,"},
+        {"variant_id": "v2_seed2", "first_line": "Реклама крутится всю ночь,"},
+        {"variant_id": "v3_seed3", "first_line": "Толпа проходит сквозь меня,"}
+      ]
+    },
+
+    {
+      "node_id": "write_poems_to_files",
+      "type": "file",
+      "started_at": "2026-06-29T16:42:31Z",
+      "completed_at": "2026-06-29T16:42:32Z",
+      "duration_sec": 1,
+      "status": "success",
+      "operation": "write_batch",
+      "files_written": [
+        "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/poems/poem_v1_seed1.txt",
+        "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/poems/poem_v2_seed2.txt",
+        "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/poems/poem_v3_seed3.txt"
+      ]
+    },
+
+    {
+      "node_id": "structural_analysis",
+      "type": "python",
+      "started_at": "2026-06-29T16:42:35Z",
+      "completed_at": "2026-06-29T16:42:42Z",
+      "duration_sec": 7,
+      "status": "success",
+      "script": "custom:metre_analyzer_v1",
+      "output_summary": {
+        "v1_seed1": {"metre": "ямб", "consistency": 0.92, "issues": []},
+        "v2_seed2": {"metre": "дольник", "consistency": 0.78, "issues": ["сбой в 8-й строке"]},
+        "v3_seed3": {"metre": "анапест", "consistency": 0.88, "issues": ["несогласованное ударение в 5-й"]}
+      }
+    },
+
+    {
+      "node_id": "rhyme_analysis",
+      "type": "python",
+      "started_at": "2026-06-29T16:42:43Z",
+      "completed_at": "2026-06-29T16:42:50Z",
+      "duration_sec": 7,
+      "status": "success",
+      "output_summary": {
+        "v1_seed1": {"scheme": "ABAB", "quality": 0.85, "type": "мужская"},
+        "v2_seed2": {"scheme": "ABBA", "quality": 0.72, "type": "женская"},
+        "v3_seed3": {"scheme": "ABAB", "quality": 0.80, "type": "мужская"}
+      }
+    },
+
+    {
+      "node_id": "originality_judge",
+      "type": "llm",
+      "model": "openrouter:gemini-3.1-flash",
+      "started_at": "2026-06-29T16:42:55Z",
+      "completed_at": "2026-06-29T16:43:25Z",
+      "duration_sec": 30,
+      "status": "success",
+      "input_tokens": 2800,
+      "output_tokens": 850,
+      "cost_usd": 0.018,
+      "output_summary": {
+        "v1_seed1": {"originality": 0.78, "reasoning": "свежий образ 'лица без имён', но 'вагон' — клише"},
+        "v2_seed2": {"originality": 0.65, "reasoning": "реклама как фон — неплохо, но ритм банальный"},
+        "v3_seed3": {"originality": 0.82, "reasoning": "'толпа проходит сквозь меня' — сильный ход"}
+      }
+    },
+
+    {
+      "node_id": "emotional_judge_human",
+      "type": "llm",
+      "model": "human:browser",
+      "started_at": "2026-06-29T16:43:30Z",
+      "completed_at": "2026-06-29T16:52:15Z",
+      "duration_sec": 525,
+      "status": "success",
+      "human_time_sec": 510,
+      "human_provider_events": [
+        {
+          "event": "prompt_copied_to_clipboard",
+          "prompt_chars": 3850,
+          "backup_file": "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/emotional_judge_prompt.md"
+        },
+        {
+          "event": "subl_opened",
+          "temp_file": "/tmp/pipeline_h/2026-06-29_16-43-30_emotional_judge.md"
+        },
+        {
+          "event": "subl_closed",
+          "user_response_chars": 1820,
+          "time_in_editor_sec": 502
+        },
+        {
+          "event": "response_validated",
+          "schema": "emotional_scores_v1",
+          "valid": true
+        }
+      ],
+      "cost_usd": 0.0,
+      "output_summary": {
+        "v1_seed1": {"emotional_impact": 0.72, "reasoning": "трогает, но немного предсказуемо"},
+        "v2_seed2": {"emotional_impact": 0.55, "reasoning": "холодный, не задевает"},
+        "v3_seed3": {"emotional_impact": 0.88, "reasoning": "сильный образ 'толпа сквозь меня', запомнил"}
+      },
+      "notes": "пользователь использовал Gemini Pro в браузере как помощник для оценки, но финальные баллы выставил сам"
+    },
+
+    {
+      "node_id": "theme_adherence_judge",
+      "type": "llm",
+      "model": "local:gemma-4-26b",
+      "started_at": "2026-06-29T16:52:20Z",
+      "completed_at": "2026-06-29T16:55:30Z",
+      "duration_sec": 190,
+      "status": "success",
+      "input_tokens": 2400,
+      "output_tokens": 380,
+      "cost_usd": 0.0,
+      "output_summary": {
+        "v1_seed1": {"theme_adherence": 0.85},
+        "v2_seed2": {"theme_adherence": 0.90},
+        "v3_seed3": {"theme_adherence": 0.88}
+      }
+    },
+
+    {
+      "node_id": "aggregate_scores",
+      "type": "python",
+      "started_at": "2026-06-29T16:55:32Z",
+      "completed_at": "2026-06-29T16:55:34Z",
+      "duration_sec": 2,
+      "status": "success",
+      "output_summary": {
+        "v1_seed1": {
+          "structural": 0.92, "rhyme": 0.85, "originality": 0.78,
+          "emotional": 0.72, "theme": 0.85,
+          "composite": 0.812,
+          "weights_used": {"structural": 0.25, "rhyme": 0.20, "originality": 0.15, "emotional": 0.30, "theme": 0.10}
+        },
+        "v2_seed2": {
+          "structural": 0.78, "rhyme": 0.72, "originality": 0.65,
+          "emotional": 0.55, "theme": 0.90,
+          "composite": 0.706
+        },
+        "v3_seed3": {
+          "structural": 0.88, "rhyme": 0.80, "originality": 0.82,
+          "emotional": 0.88, "theme": 0.88,
+          "composite": 0.859
+        },
+        "best_variant_id": "v3_seed3",
+        "feedback_for_best": "сильный образ в первой строке, но ритм сбивается в 5-й строке; рифма 2-4 могла бы быть богаче"
+      }
+    },
+
+    {
+      "node_id": "select_top_poem",
+      "type": "python",
+      "started_at": "2026-06-29T16:55:35Z",
+      "completed_at": "2026-06-29T16:55:36Z",
+      "duration_sec": 1,
+      "status": "success",
+      "selected_variant": "v3_seed3",
+      "composite_score": 0.859
+    },
+
+    {
+      "node_id": "refine_loop",
+      "type": "loop",
+      "started_at": "2026-06-29T16:55:40Z",
+      "completed_at": "2026-06-29T17:15:20Z",
+      "duration_sec": 1180,
+      "status": "completed",
+      "iterations_run": 2,
+      "max_iterations": 3,
+      "exit_reason": "condition_met (composite_score >= 0.85)",
+      "iterations": [
+        {
+          "iteration": 1,
+          "refine_poem_duration_sec": 280,
+          "re_evaluate_duration_sec": 60,
+          "score_before": 0.859,
+          "score_after": 0.872,
+          "changes_made": "выровнен ритм в 5-й строке, усилена рифма 2-4"
+        },
+        {
+          "iteration": 2,
+          "refine_poem_duration_sec": 320,
+          "re_evaluate_duration_sec": 60,
+          "score_before": 0.872,
+          "score_after": 0.881,
+          "changes_made": "заменён один клишированный образ, добавлена конкретика"
+        }
+      ],
+      "final_score": 0.881,
+      "notes": "emotional-метрика НЕ переоценивалась в loop (только structural/rhyme/originality/theme)"
+    },
+
+    {
+      "node_id": "final_human_review_gate",
+      "type": "gate",
+      "started_at": "2026-06-29T17:15:25Z",
+      "completed_at": "2026-06-29T17:18:40Z",
+      "duration_sec": 195,
+      "status": "approved_with_modifications",
+      "gate_kind": "human_approval",
+      "user_response": "modify",
+      "user_modifications": {
+        "modified_field": "text",
+        "modification_summary": "пользователь заменил 12-ю строку, посчитав её слишком драматичной",
+        "modified_file": "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/current_best_poem.json"
+      },
+      "user_comment": "Хорошо, но финал слишком давит. Заменил последнюю строку на более сдержанную.",
+      "human_time_sec": 195
+    },
+
+    {
+      "node_id": "write_final_poem",
+      "type": "file",
+      "started_at": "2026-06-29T17:18:42Z",
+      "completed_at": "2026-06-29T17:18:43Z",
+      "duration_sec": 1,
+      "status": "success",
+      "file_written": "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/final_poem.txt"
+    },
+
+    {
+      "node_id": "log_iteration",
+      "type": "file",
+      "started_at": "2026-06-29T17:18:44Z",
+      "completed_at": "2026-06-29T17:18:45Z",
+      "duration_sec": 1,
+      "status": "success",
+      "appended_to": "/home/user/.pipeline/poem_research_log.jsonl"
+    }
+  ],
+
+  "hitl_events": [
+    {
+      "timestamp": "2026-06-29T16:29:55Z",
+      "type": "dag_approval",
+      "prompt": "Builder сгенерировал DAG для гипотезы p1 (15 узлов, 2 custom tools, 1 human-judge). Запустить?",
+      "user_response": "approved",
+      "user_time_sec": 12
+    },
+    {
+      "timestamp": "2026-06-29T16:29:58Z",
+      "type": "custom_tool_install",
+      "prompt": "Steward хочет создать 2 custom tools: metre_analyzer_v1 (stdversh) и rhyme_analyzer_v1 (pymorphy3). Установить?",
+      "user_response": "approved",
+      "user_time_sec": 8
+    },
+    {
+      "timestamp": "2026-06-29T16:43:30Z",
+      "type": "human_as_api_call",
+      "node_id": "emotional_judge_human",
+      "prompt": "Открой чат с сильной моделью, вставь промпт из буфера, скопируй ответ в subl",
+      "user_response": "completed",
+      "user_time_sec": 510,
+      "cost_usd": 0.0,
+      "temp_file": "/tmp/pipeline_h/2026-06-29_16-43-30_emotional_judge.md"
+    },
+    {
+      "timestamp": "2026-06-29T17:15:25Z",
+      "type": "gate_approval",
+      "node_id": "final_human_review_gate",
+      "prompt": "Финальный стих после 2 итераций. Composite score: 0.881. Approve / Reject / Modify?",
+      "user_response": "modify",
+      "user_modifications": "заменил 12-ю строку",
+      "user_time_sec": 195
+    }
+  ],
+
+  "cost_summary": {
+    "total_tokens_in": 8800,
+    "total_tokens_out": 5430,
+    "total_cost_usd": 0.018,
+    "by_provider": {
+      "local": {"calls": 7, "tokens_in": 6000, "tokens_out": 4200, "cost_usd": 0.0},
+      "openrouter": {"calls": 1, "tokens_in": 2800, "tokens_out": 850, "cost_usd": 0.018},
+      "zai": {"calls": 0, "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0},
+      "human": {"calls": 2, "tokens_in": 0, "tokens_out": 1820, "cost_usd": 0.0, "human_time_sec": 705}
+    },
+    "budget_used_pct": 6.0,
+    "budget_remaining_usd": 0.282
+  },
+
+  "human_time_summary": {
+    "total_human_time_sec": 735,
+    "by_activity": {
+      "dag_approval": 12,
+      "tool_install_approval": 8,
+      "human_as_api_emotional_judge": 510,
+      "final_review_and_modify": 195
+    },
+    "bottleneck": "human_as_api_emotional_judge (69% of human time)",
+    "notes": "если автоматизировать emotional-judge через API-модель, human-time сократится в 3x"
+  },
+
+  "latency_summary": {
+    "total_wall_time_sec": 2925,
+    "by_node_type": {
+      "llm_local": 1215,
+      "llm_api": 30,
+      "llm_human": 525,
+      "python": 90,
+      "file": 8,
+      "loop_overhead": 20,
+      "gate": 195,
+      "idle": 842
+    },
+    "bottleneck": "llm_local (41% wall time — генерация стихов на 20 tok/s)",
+    "human_idle_time_sec": 842,
+    "notes": "пользователь мог параллельно заниматься другим во время LLM-генерации"
+  },
+
+  "evaluator_report": {
+    "evaluator_config_ref": "poetry_generation_v1",
+    "metrics": [
+      {
+        "name": "rhythm_consistency",
+        "value": 0.92,
+        "weight": 0.25,
+        "evaluator": "python:metre_analyzer_v1",
+        "automated": true,
+        "passed_minimum_threshold": true,
+        "threshold": 0.6
+      },
+      {
+        "name": "rhyme_quality",
+        "value": 0.80,
+        "weight": 0.20,
+        "evaluator": "python:rhyme_analyzer_v1",
+        "automated": true,
+        "passed_minimum_threshold": true,
+        "threshold": 0.5
+      },
+      {
+        "name": "originality",
+        "value": 0.82,
+        "weight": 0.15,
+        "evaluator": "llm_judge:openrouter:gemini-3.1-flash",
+        "passed_minimum_threshold": true
+      },
+      {
+        "name": "emotional_impact",
+        "value": 0.88,
+        "weight": 0.30,
+        "evaluator": "llm_judge:human:browser",
+        "passed_minimum_threshold": true,
+        "threshold": null,
+        "notes": "пользователь использовал Gemini Pro как помощника, но финальный балл выставил сам"
+      },
+      {
+        "name": "theme_adherence",
+        "value": 0.88,
+        "weight": 0.10,
+        "evaluator": "llm_judge:local:gemma-4-26b",
+        "passed_minimum_threshold": true
+      }
+    ],
+
+    "composite_score": 0.881,
+    "score_calculation": "0.92*0.25 + 0.80*0.20 + 0.82*0.15 + 0.88*0.30 + 0.88*0.10 = 0.230 + 0.160 + 0.123 + 0.264 + 0.088 = 0.865; after loop refinement: 0.881",
+    
+    "baseline_established": true,
+    "baseline_score": 0.865,
+    "after_refinement_score": 0.881,
+    "improvement_over_baseline": 0.016,
+
+    "penalties_applied": [],
+    "minimum_thresholds_check": "PASSED (all metrics above their thresholds)",
+
+    "actionable_feedback": {
+      "winner_hypothesis": "p1",
+      "why": "Бесплатно (только 0.018 USD на OpenRouter), 3 валидных стиха, лучшая композиция после refinement получила 0.881",
+      "weaknesses": [
+        "human-time bottleneck — emotional-judge занимает 8.5 минут",
+        "локальная модель медленная (20 tok/s) — генерация 3 стихов заняла 12 минут",
+        "refinement-loop не улучшил emotional-метрику (она не переоценивалась)",
+        "v2_seed2 получился слабым — mode collapse на 'рекламе'"
+      ],
+      "suggestions_for_next_iteration": [
+        "автоматизировать emotional-judge через DeepSeek V3 ($0.05 за итерацию, экономит 8 минут human-time)",
+        "добавить diverse-prompts в generate_poems для избежания mode collapse",
+        "дистиллировать стиль через p2 (через Gemini Pro teacher) — может поднять emotional до 0.95",
+        "добавить metric emotional_in_loop — переоценивать emotional в refine-цикле, не только в финале"
+      ],
+      "next_action_recommended": "iterate_with_distillation",
+      "next_hypothesis_suggestion": "p1_distilled: тот же DAG, но с улучшенным промптом poet_v2_distilled через teacher от p2"
+    }
+  },
+
+  "result_artifacts": {
+    "final_poem_path": "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/final_poem.txt",
+    "aggregated_scores": "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/aggregated_scores.json",
+    "all_poems": "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/poems/",
+    "human_modified_text": true,
+    "skill_created": false,
+    "skill_update_recommended": false,
+    "next_iteration_needed": true
+  },
+
+  "raw_outputs_paths": {
+    "generated_poems": "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/generated_poems.json",
+    "structural_analysis": "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/structural_analysis.json",
+    "rhyme_analysis": "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/rhyme_analysis.json",
+    "originality_scores": "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/originality_scores.json",
+    "emotional_scores": "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/emotional_scores.json",
+    "theme_scores": "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/theme_scores.json",
+    "aggregated_scores": "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/aggregated_scores.json",
+    "best_poem": "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/best_poem.json",
+    "final_poem": "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/final_poem.txt",
+    "human_as_api_temp_file": "/tmp/pipeline_h/2026-06-29_16-43-30_emotional_judge.md"
+  },
+
+  "resume_info": {
+    "checkpointed": true,
+    "last_completed_node": "log_iteration",
+    "state_files": [
+      "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/final_poem.txt",
+      "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/aggregated_scores.json",
+      "/home/user/.pipeline/runs/run_2026-06-29_16-30-00_p1/current_best_poem.json"
+    ],
+    "resumable_from": null,
+    "notes": "pipeline завершён, resume не требуется"
+  },
+
+  "_differences_from_extraction_log": {
+    "collection_handled": "3 стиха как collection — каждый judge оценил все 3 независимо",
+    "parallel_judges_logged": "5 judge-узлов в логе, каждый со своим output_summary",
+    "human_as_api_tracked": "отдельная секция human_provider_events с 4 событиями (copy, open, close, validate)",
+    "human_time_breakdown": "by_activity показывает, на что ушло человеческое время",
+    "loop_iterations_logged": "refine_loop имеет iterations[] с score_before/after",
+    "gate_with_modify": "user_response='modify' — пользователь отредактировал финал",
+    "subjective_metrics": "evaluator_report показывает 5 метрик, 3 из них subjective (llm_judge)",
+    "baseline_after_refinement": "baseline=0.865 (до refine), after_refinement=0.881 — отдельные поля",
+    "resume_info": "явное указание, что checkpoint сделан, state_files для resume"
+  }
+}

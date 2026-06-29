@@ -1,0 +1,312 @@
+{
+  "_comment": "Execution log после прогона DAG из 2_dag.json на странице 47 Сканави. Это главный артефакт для отладки и для Evaluator'а. Содержит: тайминги, токены, стоимость, output каждого узла, HITL-события, отчёт Evaluator'а.",
+
+  "run_id": "run_2026-06-29_14-10-00_h1",
+  "task_id": "scanavi_extract_research_001",
+  "hypothesis_id": "h1",
+  "dag_version": "0.1",
+  "mode": "research",
+  "started_at": "2026-06-29T14:10:00Z",
+  "completed_at": "2026-06-29T14:13:25Z",
+  "status": "completed_with_warnings",
+
+  "environment": {
+    "input_pdf": "/data/scanavi/scanavi.pdf",
+    "page_num": 47,
+    "work_dir": "/home/user/.pipeline/runs/run_2026-06-29_14-10-00_h1/",
+    "cli_host": "arch-laptop",
+    "local_model_server": "turbo:8080 (gemma-4-26b, llama-server, 32k context)",
+    "hitl_mode": "manual"
+  },
+
+  "node_executions": [
+    {
+      "node_id": "pdf_to_images",
+      "started_at": "2026-06-29T14:10:02Z",
+      "completed_at": "2026-06-29T14:10:03Z",
+      "duration_sec": 1,
+      "status": "success",
+      "command_executed": "pdftoppm -png -r 300 -f 47 -l 47 /data/scanavi/scanavi.pdf /home/user/.pipeline/runs/run_2026-06-29_14-10-00_h1/page",
+      "exit_code": 0,
+      "output_files": ["/home/user/.pipeline/runs/run_2026-06-29_14-10-00_h1/page-47.png"],
+      "stderr": "",
+      "tokens": null,
+      "cost_usd": 0
+    },
+
+    {
+      "node_id": "extract_problems",
+      "started_at": "2026-06-29T14:10:03Z",
+      "completed_at": "2026-06-29T14:11:48Z",
+      "duration_sec": 105,
+      "status": "success",
+      "model": "local:gemma-4-26b",
+      "provider": "local",
+      "input_tokens": 850,
+      "output_tokens": 1820,
+      "cost_usd": 0.0,
+      "image_input": "/home/user/.pipeline/runs/run_2026-06-29_14-10-00_h1/page-47.png",
+      "output_file": "/home/user/.pipeline/runs/run_2026-06-29_14-10-00_h1/extract_problems_output.json",
+      "output_summary": {
+        "problems_found": 8,
+        "numbers": ["1", "2", "3", "4", "5", "6", "7", "8"]
+      },
+      "raw_response_excerpt": "{\"problems\": [{\"number\": \"1\", \"latex\": \"$\\\\frac{x^2 - 4}{x + 1} = 0$\", \"raw_text\": \"Решите уравнение...\"}, ...]}"
+    },
+
+    {
+      "node_id": "validate_latex",
+      "started_at": "2026-06-29T14:11:48Z",
+      "completed_at": "2026-06-29T14:11:50Z",
+      "duration_sec": 2,
+      "status": "success",
+      "script": "custom:latex_validator_v1",
+      "script_path": "/home/user/.pipeline/tools/custom/latex_validator_v1.py",
+      "input_problems_count": 8,
+      "output": {
+        "valid_count": 6,
+        "invalid_count": 2,
+        "has_invalid": true,
+        "summary": "Problem #3: unclosed brace in \\frac{x^2-4}{x+1. Problem #7: missing $ delimiters around inline math.",
+        "invalid_problems": [
+          {
+            "number": "3",
+            "error_type": "unclosed_brace",
+            "latex_snippet": "\\frac{x^2 - 4}{x + 1",
+            "fix_hint": "add closing } after x+1"
+          },
+          {
+            "number": "7",
+            "error_type": "missing_delimiters",
+            "latex_snippet": "x = \\sqrt{2}",
+            "fix_hint": "wrap in $...$"
+          }
+        ]
+      },
+      "tokens": null,
+      "cost_usd": 0
+    },
+
+    {
+      "node_id": "fix_invalid",
+      "started_at": "2026-06-29T14:11:50Z",
+      "completed_at": "2026-06-29T14:13:20Z",
+      "duration_sec": 90,
+      "status": "success",
+      "model": "local:gemma-4-26b",
+      "provider": "local",
+      "input_tokens": 420,
+      "output_tokens": 380,
+      "cost_usd": 0.0,
+      "attempts": 1,
+      "condition_evaluated": true,
+      "condition_result": true,
+      "output_summary": {
+        "fixed_count": 2,
+        "fixes_applied": [
+          {
+            "original_problem": "3",
+            "original_latex": "\\frac{x^2 - 4}{x + 1",
+            "fixed_latex": "\\frac{x^2 - 4}{x + 1} = 0",
+            "explanation": "added missing closing brace and equation RHS"
+          },
+          {
+            "original_problem": "7",
+            "original_latex": "x = \\sqrt{2}",
+            "fixed_latex": "$x = \\sqrt{2}$",
+            "explanation": "added $ delimiters for inline math"
+          }
+        ]
+      }
+    },
+
+    {
+      "node_id": "merge_results",
+      "started_at": "2026-06-29T14:13:20Z",
+      "completed_at": "2026-06-29T14:13:22Z",
+      "duration_sec": 2,
+      "status": "success",
+      "script": "core:json_merge",
+      "output": {
+        "final_problems_count": 8,
+        "stats": {
+          "total": 8,
+          "valid_first_pass": 6,
+          "fixed": 2,
+          "still_invalid": 0
+        }
+      },
+      "output_file": "/home/user/.pipeline/runs/run_2026-06-29_14-10-00_h1/final_output.json"
+    }
+  ],
+
+  "hitl_events": [
+    {
+      "timestamp": "2026-06-29T14:09:55Z",
+      "type": "dag_approval",
+      "prompt": "Builder сгенерировал DAG для гипотезы h1 (5 узлов, 1 custom tool). Запустить на странице 47?",
+      "user_response": "approved",
+      "user_comment": "ОК, похоже на правду",
+      "user_time_sec": 8
+    },
+    {
+      "timestamp": "2026-06-29T14:09:58Z",
+      "type": "custom_tool_install",
+      "prompt": "Steward хочет создать custom tool 'latex_validator_v1' (47 строк Python) с зависимостью pylatexenc==2.10. Установить?",
+      "user_response": "approved",
+      "user_comment": "",
+      "user_time_sec": 5
+    },
+    {
+      "timestamp": "2026-06-29T14:09:59Z",
+      "type": "safety_check_review",
+      "prompt": "SafetyAgent проверил latex_validator_v1: verdict=SAFE, network=false, fs=read input/write output. Принять?",
+      "user_response": "approved",
+      "user_comment": "",
+      "user_time_sec": 3
+    }
+  ],
+
+  "steward_requests_log": [
+    {
+      "request_id": "sr_001",
+      "initiator_node": "validate_latex",
+      "query": "validate LaTeX syntax, check bracket balance, identify specific errors",
+      "function_search_result_count": 0,
+      "agent_activated": true,
+      "agent_llm_model": "local:gemma-4-26b",
+      "agent_llm_tokens": 850,
+      "agent_proposal": {
+        "type": "custom_python",
+        "name": "latex_validator_v1",
+        "dependencies": ["pylatexenc>=2.0"],
+        "approach": "Use pylatexenc.latex_parse, walk AST, check brackets"
+      },
+      "safety_check": {
+        "status": "passed",
+        "verdict": "safe",
+        "concerns": [],
+        "network_access_used": false,
+        "fs_access": "read input JSON, write output JSON"
+      },
+      "install_status": "installed",
+      "install_method": "pip install pylatexenc==2.10",
+      "script_path": "/home/user/.pipeline/tools/custom/latex_validator_v1.py",
+      "total_time_sec": 45
+    }
+  ],
+
+  "cost_summary": {
+    "total_tokens_in": 1270,
+    "total_tokens_out": 2200,
+    "total_cost_usd": 0.0,
+    "by_provider": {
+      "local": {"calls": 2, "tokens_in": 1270, "tokens_out": 2200, "cost_usd": 0.0},
+      "openrouter": {"calls": 0, "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0},
+      "zai": {"calls": 0, "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0},
+      "human": {"calls": 0, "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0, "human_time_sec": 0}
+    },
+    "budget_used_pct": 0.0,
+    "budget_remaining_usd": 0.50
+  },
+
+  "latency_summary": {
+    "total_wall_time_sec": 205,
+    "by_node": {
+      "pdf_to_images": 1,
+      "extract_problems": 105,
+      "validate_latex": 2,
+      "fix_invalid": 90,
+      "merge_results": 2,
+      "steward_install": 5
+    },
+    "bottleneck": "extract_problems (LLM inference at 20 tok/s on local server)",
+    "human_idle_time_sec": 0
+  },
+
+  "evaluator_report": {
+    "evaluator_used": "structural_checks + human_visual_check",
+    "metrics": [
+      {
+        "name": "extraction_coverage",
+        "value": 1.0,
+        "description": "Все ли задачи на странице извлечены",
+        "method": "human_visual_check (8/8 confirmed on page 47)",
+        "direction": "max",
+        "baseline_after_first_run": true
+      },
+      {
+        "name": "latex_validity_rate",
+        "value": 1.0,
+        "description": "Доля валидного LaTeX после fix_invalid",
+        "method": "automated (pdflatex compile + pylatexenc parse)",
+        "direction": "max"
+      },
+      {
+        "name": "first_pass_accuracy",
+        "value": 0.75,
+        "description": "Доля задач, извлечённых правильно с первого раза (без fix_invalid)",
+        "method": "automated",
+        "direction": "max"
+      },
+      {
+        "name": "cost_per_page",
+        "value": 0.0,
+        "unit": "usd",
+        "direction": "min"
+      },
+      {
+        "name": "latency_per_page",
+        "value": 205,
+        "unit": "sec",
+        "direction": "min"
+      },
+      {
+        "name": "human_time_per_page",
+        "value": 16,
+        "unit": "sec",
+        "description": "только HITL-апрувы, не LLM-вызовы",
+        "direction": "min"
+      }
+    ],
+
+    "composite_score": 0.875,
+    "baseline_established": true,
+    "baseline_score": 0.875,
+    "score_calculation": "weighted: coverage*0.4 + latex_validity*0.3 + first_pass_accuracy*0.3 = 1.0*0.4 + 1.0*0.3 + 0.75*0.3 = 0.925; adjusted by latency_penalty = 0.875",
+
+    "actionable_feedback": {
+      "winner_hypothesis": "h1",
+      "why": "Бесплатно, достаточно быстро (~3.5 мин/стр), все 8 задач извлечены, LaTeX валиден после фикса",
+      "weaknesses": [
+        "2 из 8 задач потребовали повторной генерации (fix_invalid) — потенциал для дистилляции",
+        "Задача #3: ошибка с закрывающей скобкой в дроби — типичный паттерн, можно решить через промпт",
+        "Задача #7: пропущены $ delimiters — легко правится в промпте"
+      ],
+      "suggestions_for_next_iteration": [
+        "Добавить в промпт extractor_system: 'ВСЕГДА оборачивай inline math в $...$'",
+        "Добавить в промпт: 'После каждой дроби проверь, что обе {закрыты}'",
+        "Прогнать h3 (с human-as-API teacher) для дистилляции промпта — может убрать 75% ошибок fix_invalid"
+      ],
+      "next_action_recommended": "iterate_with_distillation",
+      "next_hypothesis_suggestion": "h1_distilled: тот же DAG, но с улучшенным промптом extractor_v2_distilled"
+    }
+  },
+
+  "result_artifacts": {
+    "final_output": "/home/user/.pipeline/runs/run_2026-06-29_14-10-00_h1/final_output.json",
+    "extracted_problems_count": 8,
+    "ground_truth_available": false,
+    "skill_created": false,
+    "skill_update_recommended": false,
+    "next_iteration_needed": true
+  },
+
+  "raw_outputs_paths": {
+    "pdf_to_images": "/home/user/.pipeline/runs/run_2026-06-29_14-10-00_h1/page-47.png",
+    "extract_problems": "/home/user/.pipeline/runs/run_2026-06-29_14-10-00_h1/extract_problems_output.json",
+    "validate_latex": "/home/user/.pipeline/runs/run_2026-06-29_14-10-00_h1/validate_latex_output.json",
+    "fix_invalid": "/home/user/.pipeline/runs/run_2026-06-29_14-10-00_h1/fix_invalid_output.json",
+    "merge_results": "/home/user/.pipeline/runs/run_2026-06-29_14-10-00_h1/final_output.json"
+  }
+}

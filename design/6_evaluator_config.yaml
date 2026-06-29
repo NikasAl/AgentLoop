@@ -1,0 +1,345 @@
+# Evaluator Configuration
+
+Вынесенные из `execution_log.json` настройки оценки качества.
+Задаются **per-task**, не глобально. Разные задачи — разные метрики и веса.
+
+## Использование
+
+- В research-режиме: Evaluator читает этот конфиг и считает метрики после каждого прогона
+- В production-режиме: используется упрощённая версия (только critical metrics)
+- Конфиг версионный: при изменении весов создаётся новая версия, старая сохраняется
+
+---
+
+## Пример 1: Math Extraction (Сканави)
+
+```yaml
+evaluator_config_id: scanavi_extraction_v1
+task_type: "extraction"
+domain: "math_education"
+
+metrics:
+  - name: "extraction_coverage"
+    description: "Все ли задачи на странице извлечены"
+    evaluator: "human_visual_check"
+    direction: "max"
+    weight: 0.4
+    scale: "0..1"
+    ground_truth_required: false
+    notes: "человек проверяет, что все номера задач учтены"
+  
+  - name: "latex_validity_rate"
+    description: "Доля валидного LaTeX (компилируется pdflatex)"
+    evaluator: "python:pdflatex_compile_check"
+    direction: "max"
+    weight: 0.3
+    scale: "0..1"
+    automated: true
+    notes: "детерминированно, без LLM"
+  
+  - name: "first_pass_accuracy"
+    description: "Доля задач, извлечённых правильно с первого раза (без fix_invalid)"
+    evaluator: "automated_from_logs"
+    direction: "max"
+    weight: 0.3
+    scale: "0..1"
+    automated: true
+
+composite_score:
+  method: "weighted_sum"
+  weights_source: "metrics[].weight"
+  
+penalties:
+  - condition: "latency_per_page > 300"
+    multiplier: 0.95
+    description: "штраф за медленность"
+  - condition: "total_cost_usd > 0.10"
+    multiplier: 0.90
+    description: "штраф за превышение бюджета"
+  - condition: "human_time_per_page > 60"
+    multiplier: 0.92
+    description: "штраф за человеческое время"
+
+baseline_strategy:
+  first_run: "establish_baseline"
+  comparison: "improvement_over_baseline"
+  improvement_target: null  # изначально null, после 1 итерации можно задать 0.05
+
+stop_criteria:
+  - "composite_score >= 0.95"
+  - "consecutive_iterations_without_improvement >= 3"
+  - "total_cost_usd >= research_budget_usd"
+  - "max_iterations: 5"
+```
+
+---
+
+## Пример 2: Стихи (subjective quality)
+
+```yaml
+evaluator_config_id: poetry_generation_v1
+task_type: "creative_writing"
+domain: "literature"
+
+metrics:
+  - name: "rhythm_consistency"
+    description: "Консистентность ритма (ямб/хорей/анапест выдержан)"
+    evaluator: "python:metre_analyzer_v1"
+    direction: "max"
+    weight: 0.25
+    scale: "0..1"
+    automated: true
+    dependencies: ["python:stdversh"]
+    notes: "детерминированный анализ метра через stdversh-библиотеку"
+  
+  - name: "rhyme_quality"
+    description: "Качество рифм (точность, богатство)"
+    evaluator: "python:rhyme_analyzer_v1"
+    direction: "max"
+    weight: 0.20
+    scale: "0..1"
+    automated: true
+  
+  - name: "emotional_impact"
+    description: "Эмоциональный отклик, вызывает ли стих чувство"
+    evaluator: "llm_judge"
+    judge_model: "human:browser"
+    judge_prompt_ref: "emotional_impact_judge_v1"
+    direction: "max"
+    weight: 0.30
+    scale: "0..1"
+    notes: "человек через subl оценивает, можно использовать браузерную модель как помощника"
+  
+  - name: "originality"
+    description: "Оригинальность, не шаблонность"
+    evaluator: "llm_judge"
+    judge_model: "openrouter:gemini-3.1-flash"
+    judge_prompt_ref: "originality_judge_v1"
+    direction: "max"
+    weight: 0.15
+    scale: "0..1"
+    notes: "дешёвая API-модель для первоначальной оценки"
+  
+  - name: "theme_adherence"
+    description: "Соответствие заданной теме"
+    evaluator: "llm_judge"
+    judge_model: "local:gemma-4-26b"
+    judge_prompt_ref: "theme_adherence_judge_v1"
+    direction: "max"
+    weight: 0.10
+    scale: "0..1"
+
+composite_score:
+  method: "weighted_sum"
+  weights_source: "metrics[].weight"
+  minimum_thresholds:
+    rhythm_consistency: 0.6  # ниже этого — стих не засчитывается
+    rhyme_quality: 0.5
+
+penalties:
+  - condition: "emotional_impact < 0.4"
+    multiplier: 0.5
+    description: "сильный штраф за отсутствие эмоционального отклика"
+  - condition: "total_cost_usd > 0.20"
+    multiplier: 0.85
+  - condition: "human_time_sec > 600"
+    multiplier: 0.90
+
+baseline_strategy:
+  first_run: "establish_baseline"
+  comparison: "improvement_over_baseline"
+  improvement_target: null  # субъективная задача, цифры задаются после первых попыток
+
+stop_criteria:
+  - "composite_score >= 0.85"  # ниже чем у extraction — субъективная задача
+  - "consecutive_iterations_without_improvement >= 2"
+  - "human_time_total_sec >= 1800"  # 30 минут человеческого времени — предел
+  - "max_iterations: 3"  # меньше, чем у extraction, из-за человеческого фактора
+
+notes: |
+  Для стихов composite_score менее надёжный, чем для extraction.
+  Решение о принятии навыка в production принимает человек на основе
+  inspection of outputs, не только score.
+```
+
+---
+
+## Пример 3: Software Development (итеративная задача)
+
+```yaml
+evaluator_config_id: software_dev_v1
+task_type: "iterative_engineering"
+domain: "software"
+
+metrics:
+  - name: "tests_pass_rate"
+    description: "Доля проходящих тестов"
+    evaluator: "automated_from_logs"
+    direction: "max"
+    weight: 0.40
+    scale: "0..1"
+    automated: true
+  
+  - name: "compilation_success"
+    description: "Компилируется ли код без ошибок"
+    evaluator: "automated_from_logs"
+    direction: "max"
+    weight: 0.20
+    scale: "0..1"  # 0 или 1, бинарная метрика
+    automated: true
+  
+  - name: "code_quality"
+    description: "Качество кода (читаемость, модульность, идиоматичность)"
+    evaluator: "llm_judge"
+    judge_model: "openrouter:deepseek-v3"
+    judge_prompt_ref: "code_quality_judge_v1"
+    direction: "max"
+    weight: 0.25
+    scale: "0..1"
+  
+  - name: "specification_coverage"
+    description: "Покрытие требований спецификации"
+    evaluator: "llm_judge"
+    judge_model: "local:gemma-4-26b"
+    judge_prompt_ref: "spec_coverage_judge_v1"
+    direction: "max"
+    weight: 0.15
+    scale: "0..1"
+
+composite_score:
+  method: "weighted_sum"
+  minimum_thresholds:
+    compilation_success: 1.0  # не компилируется = навык не принят
+    tests_pass_rate: 0.8
+
+penalties:
+  - condition: "loop_iterations > 5"
+    multiplier: 0.90
+    description: "штраф за слишком долгое схождение"
+  - condition: "total_tokens > 100000"
+    multiplier: 0.85
+  - condition: "total_cost_usd > 0.30"
+    multiplier: 0.80
+
+baseline_strategy:
+  first_run: "establish_baseline"
+  comparison: "improvement_over_baseline"
+
+stop_criteria:
+  - "tests_pass_rate >= 0.95 AND code_quality >= 0.8"
+  - "consecutive_iterations_without_improvement >= 2"
+  - "max_loop_iterations_reached: 5"
+  - "max_iterations: 3"
+
+notes: |
+  Для софта важна композиция: код должен И компилироваться, И проходить тесты.
+  Минимальные пороги обязательны — провал любого = навык не годен.
+```
+
+---
+
+## Пример 4: Видео-подкаст (long-running pipeline)
+
+```yaml
+evaluator_config_id: video_podcast_v1
+task_type: "media_generation"
+domain: "content_creation"
+
+metrics:
+  - name: "script_quality"
+    description: "Качество сценария диалога"
+    evaluator: "llm_judge"
+    judge_model: "human:browser"
+    judge_prompt_ref: "script_judge_v1"
+    direction: "max"
+    weight: 0.35
+    scale: "0..1"
+    evaluated_at: "post-script_gate"
+    notes: "оценивается ДО запуска TTS, чтобы не тратить ресурсы зря"
+  
+  - name: "audio_quality"
+    description: "Качество аудио (нет заиканий, ровный темп)"
+    evaluator: "python:audio_quality_analyzer"
+    direction: "max"
+    weight: 0.20
+    scale: "0..1"
+    automated: true
+    dependencies: ["python:pydub", "python:librosa"]
+  
+  - name: "information_density"
+    description: "Плотность информации (не вода)"
+    evaluator: "llm_judge"
+    judge_model: "openrouter:gemini-3.1-flash"
+    judge_prompt_ref: "info_density_judge_v1"
+    direction: "max"
+    weight: 0.20
+    scale: "0..1"
+  
+  - name: "factual_accuracy"
+    description: "Фактологическая точность"
+    evaluator: "llm_judge"
+    judge_model: "openrouter:deepseek-v3"
+    judge_prompt_ref: "factual_check_judge_v1"
+    direction: "max"
+    weight: 0.25
+    scale: "0..1"
+
+composite_score:
+  method: "weighted_sum"
+  minimum_thresholds:
+    script_quality: 0.7  # ниже — пересоздавать скрипт
+    factual_accuracy: 0.8  # ниже — фактическая ошибка, нельзя публиковать
+
+penalties:
+  - condition: "wall_time_hours > 2"
+    multiplier: 0.90
+  - condition: "total_cost_usd > 0.50"
+    multiplier: 0.85
+  - condition: "script_rejections > 2"
+    multiplier: 0.80
+
+stage_gates:
+  - after: "write_dialogue_script"
+    metric: "script_quality"
+    must_pass: 0.7
+    on_fail: "regenerate_script"
+    max_regeneration_attempts: 3
+
+baseline_strategy:
+  first_run: "establish_baseline"
+
+stop_criteria:
+  - "composite_score >= 0.85 AND factual_accuracy >= 0.9"
+  - "consecutive_iterations_without_improvement >= 2"
+  - "total_cost_usd >= 1.0"
+  - "max_iterations: 3"
+
+notes: |
+  Long-running pipeline — критично использовать stage_gates,
+  чтобы не запускать дорогие этапы (TTS, video compose) на плохом скрипте.
+  Resume semantics обязательна для production-режима.
+```
+
+---
+
+## Универсальные правила
+
+Независимо от task_type, действуют следующие принципы:
+
+1. **Метрики задаются per-task, не глобально.** Hypothesis Generator предлагает метрики, пользователь подтверждает.
+
+2. **Автоматизируемые метрики приоритетнее.** Если есть `automated: true` — он считается без LLM, дешевле и быстрее.
+
+3. **LLM-judge через human:browser — для критичных субъективных метрик.** Не тратит API-бюджет, но требует человеческого времени.
+
+4. **Minimum thresholds обязательны.** Если метрика ниже порога — навык не принимается в production, даже если composite_score высокий.
+
+5. **Penalties — soft, thresholds — hard.** Penalty снижает score, threshold блокирует принятие.
+
+6. **Stop criteria предотвращают бесконечные циклы.** Минимум: max_iterations + consecutive_without_improvement + budget_limit.
+
+7. **Baseline фиксируется после первого прогона.** До этого — нет "улучшения", только absolute score.
+
+8. **Composite score метод:**
+   - `weighted_sum` — для большинства задач
+   - `pareto` — для multi-objective (когда метрики конфликтуют, напр. speed vs accuracy)

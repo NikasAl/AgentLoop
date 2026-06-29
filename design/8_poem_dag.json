@@ -1,0 +1,530 @@
+{
+  "_comment": "Pipeline DAG для написания стихов (гипотеза p1). Проверка форматов на creative-задаче: collection outputs, llm_judge через human:browser, parallel refinement через loop, subjective metrics.",
+
+  "schema_version": "0.2",
+  "hypothesis_id": "p1",
+  "task_id": "poem_generation_research_001",
+  "builder_version": "0.2",
+  "generated_at": "2026-06-29T16:05:00Z",
+
+  "prerequisites": [
+    {
+      "type": "custom_tool",
+      "request_id": "sr_p1",
+      "status": "resolved",
+      "resolved_to": "custom:metre_analyzer_v1",
+      "script_path": "tools/custom/metre_analyzer_v1.py"
+    },
+    {
+      "type": "custom_tool",
+      "request_id": "sr_p2",
+      "status": "resolved",
+      "resolved_to": "custom:rhyme_analyzer_v1",
+      "script_path": "tools/custom/rhyme_analyzer_v1.py"
+    }
+  ],
+
+  "nodes": [
+    {
+      "id": "generate_poems_parallel",
+      "type": "llm",
+      "model": "local:gemma-4-26b",
+      "system_prompt_ref": "poet_v1",
+      "user_prompt_template": "Напиши стих на тему: {theme}\n\nФорма: {form}\nДлина: {length}\nНастроение: {mood}\nПодсказки от автора: {user_hint}\n\nВерни JSON: {\"poems\": [{\"text\": \"...\", \"variant_id\": \"...\"}]}",
+      "iterate_over_seeds": [1, 2, 3],
+      "iterate_param": "seed",
+      "output": {
+        "kind": "collection",
+        "items_schema_ref": "poem_collection_v1",
+        "min_items": 3,
+        "max_items": 3
+      },
+      "output_to_file": "{work_dir}/generated_poems.json",
+      "timeout_sec": 600,
+      "max_retries": 1
+    },
+
+    {
+      "id": "write_poems_to_files",
+      "type": "file",
+      "operation": "write_batch",
+      "from_collection": "{generate_poems_parallel.output.poems}",
+      "path_template": "{work_dir}/poems/poem_{variant_id}.txt",
+      "content_field": "text",
+      "output": {
+        "kind": "files",
+        "pattern": "{work_dir}/poems/poem_*.txt",
+        "list_as": "poem_files",
+        "mime": "text/plain"
+      },
+      "timeout_sec": 5
+    },
+
+    {
+      "id": "structural_analysis",
+      "type": "python",
+      "script_ref": "custom:metre_analyzer_v1",
+      "input": {
+        "poem_files": "{write_poems_to_files.output.poem_files}"
+      },
+      "iterate_over": "input.poem_files",
+      "output": {
+        "kind": "json",
+        "schema_ref": "structural_analysis_v1"
+      },
+      "output_to_file": "{work_dir}/structural_analysis.json",
+      "timeout_sec": 30
+    },
+
+    {
+      "id": "rhyme_analysis",
+      "type": "python",
+      "script_ref": "custom:rhyme_analyzer_v1",
+      "input": {
+        "poem_files": "{write_poems_to_files.output.poem_files}"
+      },
+      "iterate_over": "input.poem_files",
+      "output": {
+        "kind": "json",
+        "schema_ref": "rhyme_analysis_v1"
+      },
+      "output_to_file": "{work_dir}/rhyme_analysis.json",
+      "timeout_sec": 30
+    },
+
+    {
+      "id": "originality_judge",
+      "type": "llm",
+      "model": "openrouter:gemini-3.1-flash",
+      "system_prompt_ref": "originality_judge_v1",
+      "user_prompt_template": "Оцени оригинальность стиха (0-1) по критериям:\n- не шаблонные образы\n- свежие метафоры\n- неожиданные повороты\n\nСтих:\n{generate_poems_parallel.output.poems}\n\nВерни JSON: {\"scores\": [{\"variant_id\": \"...\", \"originality\": 0.0, \"reasoning\": \"...\"}]}",
+      "output_schema_ref": "originality_scores_v1",
+      "output_to_file": "{work_dir}/originality_scores.json",
+      "timeout_sec": 60,
+      "cost_warning": "estimated 0.02 USD per call"
+    },
+
+    {
+      "id": "emotional_judge_human",
+      "type": "llm",
+      "model": "human:browser",
+      "system_prompt_ref": "emotional_judge_v1",
+      "user_prompt_template": "Оцени эмоциональный отклик каждого стиха (0-1).\n\nСтихи:\n{generate_poems_parallel.output.poems}\n\nВерни JSON: {\"scores\": [{\"variant_id\": \"...\", \"emotional_impact\": 0.0, \"reasoning\": \"...\"}]}",
+      "output_schema_ref": "emotional_scores_v1",
+      "output_to_file": "{work_dir}/emotional_scores.json",
+      "timeout_sec": 1800,
+      "human_provider_config": {
+        "open_editor": "subl",
+        "copy_prompt_to_clipboard": true,
+        "prompt_backup_file": "{work_dir}/emotional_judge_prompt.md",
+        "timeout_min": 30,
+        "special_markers": ["SKIP", "ABORT", "RETRY"],
+        "instructions_to_user": "Открой чат с сильной моделью (Gemini Pro / Claude) в браузере. Вставь промпт из буфера. Скопируй ответ. Вставь в subl. Сохрани и закрой."
+      },
+      "validation": {
+        "schema_ref": "emotional_scores_v1",
+        "on_invalid": "RETRY"
+      }
+    },
+
+    {
+      "id": "theme_adherence_judge",
+      "type": "llm",
+      "model": "local:gemma-4-26b",
+      "system_prompt_ref": "theme_judge_v1",
+      "user_prompt_template": "Оцени соответствие теме '{theme}' (0-1) для каждого стиха:\n\n{generate_poems_parallel.output.poems}\n\nВерни JSON: {\"scores\": [{\"variant_id\": \"...\", \"theme_adherence\": 0.0}]}",
+      "output_schema_ref": "theme_scores_v1",
+      "output_to_file": "{work_dir}/theme_scores.json",
+      "timeout_sec": 120
+    },
+
+    {
+      "id": "aggregate_scores",
+      "type": "python",
+      "script_ref": "core:json_merge",
+      "input": {
+        "structural": "{structural_analysis.output}",
+        "rhyme": "{rhyme_analysis.output}",
+        "originality": "{originality_judge.output}",
+        "emotional": "{emotional_judge_human.output}",
+        "theme": "{theme_adherence_judge.output}",
+        "poems": "{generate_poems_parallel.output.poems}"
+      },
+      "output": {
+        "kind": "json",
+        "schema_ref": "aggregated_scores_v1"
+      },
+      "output_to_file": "{work_dir}/aggregated_scores.json",
+      "timeout_sec": 10
+    },
+
+    {
+      "id": "select_top_poem",
+      "type": "python",
+      "script_ref": "core:select_best_by_score",
+      "input": {
+        "aggregated": "{aggregate_scores.output}",
+        "metric": "composite_score",
+        "direction": "max"
+      },
+      "output": {
+        "kind": "json",
+        "schema_ref": "best_poem_v1"
+      },
+      "output_to_file": "{work_dir}/best_poem.json",
+      "timeout_sec": 5
+    },
+
+    {
+      "id": "refine_loop",
+      "type": "loop",
+      "loop_kind": "until_condition",
+      "body": ["refine_poem", "re_evaluate"],
+      "exit_condition": "{re_evaluate.output.composite_score} >= 0.85 OR {refine_loop.iteration_count} >= 3",
+      "max_iterations": 3,
+      "on_max_iterations": "continue_with_warning",
+      "carry_over_state": ["{work_dir}/current_best_poem.json"],
+      "output": "{re_evaluate.output}"
+    },
+
+    {
+      "id": "refine_poem",
+      "type": "llm",
+      "model": "local:gemma-4-26b",
+      "system_prompt_ref": "refiner_v1",
+      "user_prompt_template": "Улучши стих, учитывая feedback.\n\nТекущий стих:\n{select_top_poem.output.text}\n\nFeedback:\n{aggregate_scores.output.feedback}\n\nСтруктурные проблемы:\n{structural_analysis.output.issues}\n\nВерни JSON: {\"text\": \"...\", \"changes_made\": \"...\"}",
+      "output_schema_ref": "poem_v1",
+      "updates_state": {
+        "{work_dir}/current_best_poem.json": "output"
+      },
+      "timeout_sec": 300,
+      "max_retries": 1
+    },
+
+    {
+      "id": "re_evaluate",
+      "type": "python",
+      "script_ref": "core:quick_evaluate",
+      "input": {
+        "poem": "{refine_poem.output}",
+        "metrics": ["structural", "rhyme", "originality", "theme"],
+        "skip_human_metrics": true
+      },
+      "output": {
+        "kind": "json",
+        "schema_ref": "quick_score_v1"
+      },
+      "timeout_sec": 60,
+      "notes": "human-judge (emotional) пропускается в refine-цикле для экономии времени, оценивается только в финале"
+    },
+
+    {
+      "id": "final_human_review_gate",
+      "type": "gate",
+      "gate_kind": "human_approval",
+      "trigger_after": "refine_loop",
+      "prompt_template": "Финальный стих после {refine_loop.iteration_count} итераций refinement.\nComposite score: {re_evaluate.output.composite_score}\n\nСтих:\n{refine_poem.output.text}\n\nApprove / Reject (вернуться к generate_poems) / Modify (отредактировать) / Accept-As-Is",
+      "show_artifacts": ["{work_dir}/current_best_poem.json", "{work_dir}/aggregated_scores.json"],
+      "approval_modes": ["approve", "reject", "modify", "accept_as_is"],
+      "on_reject": {"action": "go_back_to", "target": "generate_poems_parallel", "feedback_prompt": "Что не так с поколением стихов?"},
+      "on_modify": {"action": "use_modified_input", "modify_target": "current_best_poem.json"},
+      "on_accept_as_is": {"action": "continue", "note": "пользователь принимает с оговорками, skill помечается needs_review"},
+      "hitl_mode": "manual",
+      "timeout_sec": 1800
+    },
+
+    {
+      "id": "write_final_poem",
+      "type": "file",
+      "operation": "write",
+      "path": "{work_dir}/final_poem.txt",
+      "content_from": "{refine_poem.output.text}",
+      "output": {
+        "kind": "file_ref",
+        "path": "{work_dir}/final_poem.txt",
+        "mime": "text/plain"
+      },
+      "timeout_sec": 5
+    },
+
+    {
+      "id": "log_iteration",
+      "type": "file",
+      "operation": "append",
+      "path": "{work_dir}/../poem_research_log.jsonl",
+      "content_from": {
+        "template": "{\"timestamp\": \"{run_timestamp}\", \"iteration\": {refine_loop.iteration_count}, \"final_score\": {re_evaluate.output.composite_score}, \"human_decision\": \"{final_human_review_gate.decision}\"}",
+        "format": "jsonl"
+      },
+      "timeout_sec": 5
+    }
+  ],
+
+  "edges": [
+    {"from": "generate_poems_parallel", "to": "write_poems_to_files"},
+    {"from": "write_poems_to_files", "to": "structural_analysis"},
+    {"from": "write_poems_to_files", "to": "rhyme_analysis"},
+    {"from": "write_poems_to_files", "to": "originality_judge"},
+    {"from": "write_poems_to_files", "to": "emotional_judge_human"},
+    {"from": "write_poems_to_files", "to": "theme_adherence_judge"},
+    {"from": "structural_analysis", "to": "aggregate_scores"},
+    {"from": "rhyme_analysis", "to": "aggregate_scores"},
+    {"from": "originality_judge", "to": "aggregate_scores"},
+    {"from": "emotional_judge_human", "to": "aggregate_scores"},
+    {"from": "theme_adherence_judge", "to": "aggregate_scores"},
+    {"from": "aggregate_scores", "to": "select_top_poem"},
+    {"from": "select_top_poem", "to": "refine_loop"},
+    {"from": "refine_loop", "to": "final_human_review_gate"},
+    {"from": "final_human_review_gate", "to": "write_final_poem"},
+    {"from": "write_final_poem", "to": "log_iteration"}
+  ],
+
+  "entry": "generate_poems_parallel",
+  "exit": "log_iteration",
+
+  "prompts": {
+    "poet_v1": {
+      "version": "v1",
+      "text": "Ты — поэт. Пишешь искренние, не шаблонные стихи на русском.\n\nПравила:\n- Избегай клише ('светлая грусть', 'осенний лист', 'слеза')\n- Используй конкретные образы вместо абстрактных\n- Соблюдай выбранный метр и рифму\n- Не объясняй стих, пусть говорит сам за себя\n- Возвращай только JSON",
+      "distilled_from": null
+    },
+    "originality_judge_v1": {
+      "version": "v1",
+      "text": "Ты — литературный критик. Оцениваешь оригинальность стиха. Штрафуй за клише, шаблонные образы, избитые метафоры. Поощряй свежие ходы."
+    },
+    "emotional_judge_v1": {
+      "version": "v1",
+      "text": "Ты — читатель. Оцени, насколько стих вызывает эмоциональный отклик. Не анализируй структуру, только воздействие. Будь честен — если не тронуло, ставь низкий балл."
+    },
+    "theme_judge_v1": {
+      "version": "v1",
+      "text": "Ты — редактор. Оцени соответствие стиха заданной теме. Не 'насколько стих о теме', а 'насколько тема присутствует и раскрыта'."
+    },
+    "refiner_v1": {
+      "version": "v1",
+      "text": "Ты — поэт-редактор. Улучшаешь стих, учитывая конкретные замечания. Минимальные изменения, сохрани авторский голос. Не переписывай с нуля."
+    }
+  },
+
+  "schemas": {
+    "poem_collection_v1": {
+      "type": "object",
+      "properties": {
+        "poems": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "text": {"type": "string"},
+              "variant_id": {"type": "string"}
+            },
+            "required": ["text", "variant_id"]
+          }
+        }
+      },
+      "required": ["poems"]
+    },
+    "structural_analysis_v1": {
+      "type": "object",
+      "properties": {
+        "analyses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "variant_id": {"type": "string"},
+              "metre": {"type": "string"},
+              "metre_consistency": {"type": "number"},
+              "issues": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "rhyme_analysis_v1": {
+      "type": "object",
+      "properties": {
+        "analyses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "variant_id": {"type": "string"},
+              "rhyme_scheme": {"type": "string"},
+              "rhyme_quality": {"type": "number"},
+              "rhyme_type": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "originality_scores_v1": {
+      "type": "object",
+      "properties": {
+        "scores": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "variant_id": {"type": "string"},
+              "originality": {"type": "number"},
+              "reasoning": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "emotional_scores_v1": {
+      "type": "object",
+      "properties": {
+        "scores": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "variant_id": {"type": "string"},
+              "emotional_impact": {"type": "number"},
+              "reasoning": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "theme_scores_v1": {
+      "type": "object",
+      "properties": {
+        "scores": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "variant_id": {"type": "string"},
+              "theme_adherence": {"type": "number"}
+            }
+          }
+        }
+      }
+    },
+    "aggregated_scores_v1": {
+      "type": "object",
+      "properties": {
+        "poems_with_scores": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "variant_id": {"type": "string"},
+              "text": {"type": "string"},
+              "structural_score": {"type": "number"},
+              "rhyme_score": {"type": "number"},
+              "originality_score": {"type": "number"},
+              "emotional_score": {"type": "number"},
+              "theme_score": {"type": "number"},
+              "composite_score": {"type": "number"},
+              "feedback": {"type": "string"}
+            }
+          }
+        },
+        "best_variant_id": {"type": "string"}
+      }
+    },
+    "best_poem_v1": {
+      "type": "object",
+      "properties": {
+        "text": {"type": "string"},
+        "variant_id": {"type": "string"},
+        "composite_score": {"type": "number"},
+        "feedback": {"type": "string"}
+      }
+    },
+    "poem_v1": {
+      "type": "object",
+      "properties": {
+        "text": {"type": "string"},
+        "changes_made": {"type": "string"}
+      },
+      "required": ["text"]
+    },
+    "quick_score_v1": {
+      "type": "object",
+      "properties": {
+        "composite_score": {"type": "number"},
+        "structural_score": {"type": "number"},
+        "rhyme_score": {"type": "number"},
+        "originality_score": {"type": "number"},
+        "theme_score": {"type": "number"},
+        "iteration": {"type": "integer"}
+      }
+    }
+  },
+
+  "steward_requests": [
+    {
+      "request_id": "sr_p1",
+      "initiator_node": "structural_analysis",
+      "query": "Анализ метра русского стиха (ямб/хорей/анапест/дольник)",
+      "function_search_result_count": 0,
+      "agent_activated": true,
+      "agent_proposal": {
+        "type": "custom_python",
+        "name": "metre_analyzer_v1",
+        "dependencies": ["stdversh>=0.1.0"],
+        "approach": "Использовать stdversh для определения метра, проверки консистентности"
+      },
+      "safety_check": {
+        "status": "passed",
+        "verdict": "safe",
+        "network_access_used": false,
+        "fs_access": "read poem files, write analysis JSON"
+      },
+      "install_status": "installed",
+      "install_method": "pip install stdversh",
+      "script_path": "tools/custom/metre_analyzer_v1.py"
+    },
+    {
+      "request_id": "sr_p2",
+      "initiator_node": "rhyme_analysis",
+      "query": "Анализ рифм русского стиха (точность, тип: мужская/женская/дактилическая)",
+      "function_search_result_count": 0,
+      "agent_activated": true,
+      "agent_proposal": {
+        "type": "custom_python",
+        "name": "rhyme_analyzer_v1",
+        "dependencies": ["pymorphy3>=2.0"],
+        "approach": "Использовать pymorphy3 для определения ударений, затем сравнение окончаний"
+      },
+      "safety_check": {
+        "status": "passed",
+        "verdict": "safe",
+        "network_access_used": false,
+        "fs_access": "read poem files, write analysis JSON"
+      },
+      "install_status": "installed",
+      "install_method": "pip install pymorphy3",
+      "script_path": "tools/custom/rhyme_analyzer_v1.py"
+    }
+  ],
+
+  "input_vars_resolved_at_runtime": {
+    "$WORKDIR": "isolated working directory for this run",
+    "$RUN_ID": "unique run identifier",
+    "$RUN_TIMESTAMP": "ISO timestamp when run started",
+    "theme": "Одиночество в большом городе",
+    "form": "свободная",
+    "length": "12-16 строк",
+    "mood": "меланхоличный, но не депрессивный",
+    "user_hint": "Хочется, чтобы стих был искренним, не шаблонным. Можно использовать образы метро, ночных улиц, рекламы."
+  },
+
+  "_differences_from_extraction_dag": {
+    "collection_outputs": "generate_poems_parallel возвращает 3 стиха как коллекцию, не один артефакт",
+    "parallel_judges": "5 разных judge-узлов запускаются независимо",
+    "human_judge_in_loop": "emotional_judge_human — LLM-узел с model=human:browser, не отдельный gate",
+    "refine_vs_fix": "loop для refine (улучшение), не для fix (исправление ошибок)",
+    "skip_human_in_loop": "re_evaluate пропускает emotional-метрику для скорости, она считается только в финале",
+    "gate_with_modes": "final_human_review_gate имеет 4 режима (approve/reject/modify/accept_as_is), не 2",
+    "multiple_schemas": "8 разных output_schema_ref, не 1 — каждый judge возвращает свой формат",
+    "iterate_over_seeds": "вместо iterate_over коллекции, итерируемся по seed-ам для разнообразия"
+  }
+}

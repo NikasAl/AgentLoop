@@ -1,0 +1,197 @@
+{
+  "_comment": "Hypothesis Generator output для задачи написания хороших стихов. Максимально отличается от extraction: нет правильного ответа, множественные валидные выходы, субъективные метрики. Проверяем, что форматы работают на creative-задачах.",
+
+  "task_id": "poem_generation_research_001",
+  "task_description": "Написать хорошие стихи на тему 'Одиночество в большом городе'. Качество оценивается по ритму, рифме, эмоциональному отклику, оригинальности. Финал — human review.",
+  "sample_input": {
+    "theme": "Одиночество в большом городе",
+    "form": "свободная (не классический сонет)",
+    "length": "12-16 строк",
+    "language": "русский",
+    "mood": "меланхоличный, но не депрессивный"
+  },
+  "user_constraints": {
+    "budget_usd_per_iteration": 0.30,
+    "max_human_time_per_iteration_sec": 1800,
+    "prefer_local": true,
+    "human_time_budget_per_iteration_sec": 600,
+    "final_review_required": true
+  },
+  "user_hint": "Хочется, чтобы стих был искренним, не шаблонным. Можно использовать образы метро, ночных улиц, рекламы. Не использовать 'светлую грусть' — это клише.",
+
+  "hypotheses": [
+    {
+      "id": "p1",
+      "title": "Single-pass с локальной Gemma 4 + структурный анализ",
+      "rationale": "Gemma 4 26B пишет стихи хорошо, особенно на русском. Один вызов генерирует стих, затем детерминированный анализ метра и рифмы даёт objective метрики. Дёшево, повторяемо, можно итеративно улучшать через промпт.",
+
+      "approach": [
+        "Один LLM-вызов к локальной Gemma 4 26B: тема + форма → стих",
+        "Параллельно: 3 разных промпта (разная тональность, разные образы)",
+        "Структурный анализ каждого стиха (метр, рифма) через Python-библиотеку stdversh",
+        "LLM-judge от локальной Gemma 4 для originality и theme_adherence",
+        "Human-as-API judge для emotional_impact (через subl + браузер)",
+        "Выбор лучшего по composite score, human review финала"
+      ],
+
+      "model_assignments": [
+        {"role": "poet", "model": "local:gemma-4-26b", "reason": "хорошо пишет на русском, бесплатно"},
+        {"role": "structural_analyzer", "model": "python:stdversh", "reason": "детерминированно"},
+        {"role": "originality_judge", "model": "openrouter:gemini-3.1-flash", "reason": "дёшево, умно"},
+        {"role": "emotional_judge", "model": "human:browser", "reason": "субъективная метрика требует человека, можно использовать браузерную модель как помощника"},
+        {"role": "refiner", "model": "local:gemma-4-26b", "reason": "та же модель для консистентности"}
+      ],
+
+      "custom_tools_needed": [
+        {
+          "purpose": "Анализ метра русского стиха (ямб/хорей/анапест/дольник/акцентный)",
+          "proposed_name": "metre_analyzer_v1",
+          "type": "python",
+          "estimated_dependencies": ["stdversh>=0.1.0"],
+          "steward_request_hint": "русский стиховедческий анализатор, может быть через stdversh или ручная реализация"
+        },
+        {
+          "purpose": "Анализ рифм (точность, богатство, мужская/женская/дактилическая)",
+          "proposed_name": "rhyme_analyzer_v1",
+          "type": "python",
+          "estimated_dependencies": ["pymorphy3>=2.0", "python-rhyme>=0.1.0"],
+          "steward_request_hint": "нужен морфологический анализ для определения ударений и рифм"
+        }
+      ],
+
+      "estimated": {
+        "tokens_per_iteration": 12000,
+        "latency_per_iteration_sec": 600,
+        "cost_per_iteration_usd": 0.05,
+        "human_time_per_iteration_sec": 300,
+        "expected_quality": "medium (нужна дистилляция промпта для high)",
+        "confidence_in_estimate": "low"
+      },
+
+      "risks": [
+        "локальная модель может выдавать шаблонные образы ('светлая грусть', 'осенний лист')",
+        "метр русского стиха сложно анализировать, stdversh может ошибаться на дольнике",
+        "human-judge субъективен, не повторяем между итерациями",
+        "3 разных промпта могут дать 3 похожих стиха (mode collapse)",
+        "без дистилляции промпта quality ceiling низкий"
+      ],
+
+      "test_sample_size": 3,
+      "user_hint": "попробовать сначала p1, потом если quality < 0.7 — p2 с дистилляцией"
+    },
+
+    {
+      "id": "p2",
+      "title": "Дистилляция стиля через human-as-API teacher",
+      "rationale": "Через браузерный Gemini Pro / Claude сгенерировать образцовый стих, система анализирует его стиль (образы, ритм, синтаксис), дистиллирует эти характеристики в промпт для локальной Gemma 4. Подходит для creative-задач, где 'хороший' определяется не метриками, а стилем.",
+
+      "approach": [
+        "Human-as-API: человек вставляет в браузер запрос к сильной модели, получает образцовый стих",
+        "LLM-анализ: 'какие приёмы использованы? (образы, ритм, синтаксис, лексика)'",
+        "Дистилляция в промпт: 'пиши стих, используя следующие приёмы: ...'",
+        "Локальная Gemma 4 генерирует 3 варианта по дистиллированному промпту",
+        "Структурный анализ + LLM-judge (как в p1)",
+        "Human review финала"
+      ],
+
+      "model_assignments": [
+        {"role": "teacher", "model": "human:browser", "reason": "бесплатно, любая сильная модель в браузере"},
+        {"role": "style_analyzer", "model": "local:gemma-4-26b", "reason": "дёшево, reasoning"},
+        {"role": "poet", "model": "local:gemma-4-26b", "reason": "target для дистилляции"},
+        {"role": "structural_analyzer", "model": "python:stdversh", "reason": "детерминированно"},
+        {"role": "emotional_judge", "model": "human:browser", "reason": "субъективная метрика"}
+      ],
+
+      "custom_tools_needed": [
+        {
+          "purpose": "Анализ стиля стихотворения (метафоры, ритм, синтаксические фигуры, лексические поля)",
+          "proposed_name": "style_analyzer_v1",
+          "type": "python",
+          "estimated_dependencies": ["nltk>=3.8", "pymorphy3>=2.0"],
+          "steward_request_hint": "нужен стилистический анализ текста на русском"
+        }
+      ],
+
+      "estimated": {
+        "tokens_per_iteration": 18000,
+        "latency_per_iteration_sec": 900,
+        "cost_per_iteration_usd": 0.0,
+        "human_time_per_iteration_sec": 600,
+        "expected_quality": "high (стиль дистиллирован от сильной модели)",
+        "confidence_in_estimate": "medium"
+      },
+
+      "risks": [
+        "образцовый стих от браузерной модели может быть сам по себе шаблонным",
+        "стиль сложно формализовать в промпте (LLM-анализ может упустить тонкости)",
+        "требует много человеческого времени (10+ минут на итерацию)",
+        "если дистилляция переобучится под один стиль — стихи станут однообразными"
+      ],
+
+      "test_sample_size": 3,
+      "user_hint": null
+    },
+
+    {
+      "id": "p3",
+      "title": "Iterative self-refinement с rejection sampling",
+      "rationale": "Локальная Gemma 4 генерирует 10 стихов, LLM-judge отбирает 3 лучших, локальная модель дорабатывает каждый с учётом feedback, повторяет. Через 3 итерации получаем лучший вариант без человеческого вмешательства (только финальный review). Подходит, если human-time критичен.",
+
+      "approach": [
+        "Локальная Gemma 4 генерирует 10 стихов (parallel промпты с разными seed)",
+        "LLM-judge (DeepSeek V3 через OpenRouter) оценивает каждый по 4 метрикам",
+        "Top-3 переходят на refine-стадию",
+        "Refine: каждый стих + feedback от judge → улучшенная версия",
+        "Повтор 3 раза (rejection sampling)",
+        "Финальный human review одного лучшего"
+      ],
+
+      "model_assignments": [
+        {"role": "poet", "model": "local:gemma-4-26b", "reason": "генерация"},
+        {"role": "judge", "model": "openrouter:deepseek-v3", "reason": "умно, дёшево"},
+        {"role": "refiner", "model": "local:gemma-4-26b", "reason": "та же модель, консистентность"},
+        {"role": "final_reviewer", "model": "human:browser", "reason": "финальная проверка"}
+      ],
+
+      "custom_tools_needed": [
+        {
+          "purpose": "Сборка feedback из judge-оценок в структурированный prompt для refiner",
+          "proposed_name": "feedback_compiler_v1",
+          "type": "python",
+          "estimated_dependencies": [],
+          "steward_request_hint": "простая JSON-transformation, можно через jq"
+        }
+      ],
+
+      "estimated": {
+        "tokens_per_iteration": 45000,
+        "latency_per_iteration_sec": 1800,
+        "cost_per_iteration_usd": 0.15,
+        "human_time_per_iteration_sec": 120,
+        "expected_quality": "medium-high (зависит от качества judge)",
+        "confidence_in_estimate": "medium"
+      },
+
+      "risks": [
+        "judge может иметь смещение (например, предпочитать длинные стихи)",
+        "rejection sampling может сходиться к одному стилю",
+        "самый дорогой вариант по токенам из трёх",
+        "локальная модель 20 tok/s — 10 стихов × 200 токенов = 40 минут только на генерацию"
+      ],
+
+      "test_sample_size": 3,
+      "user_hint": null
+    }
+  ],
+
+  "metadata": {
+    "generated_by": "HypothesisGenerator",
+    "model": "local:gemma-4-26b",
+    "generated_at": "2026-06-29T16:00:00Z",
+    "generation_tokens": 2100,
+    "generation_cost_usd": 0.0,
+    "generation_latency_sec": 105,
+    "history_aware": true,
+    "previous_attempts_considered": 0
+  }
+}

@@ -1,0 +1,155 @@
+# Curated model list for AgentLoop.
+#
+# Tiers:
+#   0   — Local (free, but slow)
+#   1   — Cheap API (routine meta-agents)
+#   2   — Mid API (hypothesis gen, builder, judge)
+#   3   — Strong API (distillation teacher)
+#   999 — Human (free, but costs human time)
+#
+# Prices in USD per 1M tokens (input / output).
+# Last updated: 2026-06-29. Verify on provider's pricing page before relying on cost.
+
+models:
+  # ─── Tier 0: Local (via llama-server) ─────────────────
+  - name: "gemma-4-26b"
+    provider: "local"
+    tier: 0
+    capabilities: ["text", "vision", "reasoning"]
+    price_input_usd_per_1m: 0.0
+    price_output_usd_per_1m: 0.0
+    max_context: 32000
+    max_output: 8192
+    description: "Gemma 4 26B via llama-server (turbo:8080)"
+    rating: 0.75
+    notes: "Reasoning model, vision, ~20 tok/s on Xeon+GTX1080"
+
+  # ─── Tier 1: Cheap API ────────────────────────────────
+  - name: "google/gemini-3.1-flash-lite"
+    provider: "openrouter"
+    tier: 1
+    capabilities: ["text", "vision", "reasoning", "json_mode"]
+    price_input_usd_per_1m: 0.30
+    price_output_usd_per_1m: 2.50
+    max_context: 1000000
+    max_output: 8192
+    description: "Gemini 3.1 Flash Lite — cheaper than Gemma 4 but smarter"
+    rating: 0.85
+
+  - name: "glm-4.7-flash"
+    provider: "zai"
+    tier: 1
+    capabilities: ["text", "reasoning", "json_mode"]
+    price_input_usd_per_1m: 0.0  # free on z.ai
+    price_output_usd_per_1m: 0.0
+    max_context: 128000
+    max_output: 4096
+    description: "GLM-4.7 Flash — free on z.ai but rate-limited"
+    rating: 0.80
+    notes: "Needs retry logic for 429. No vision."
+
+  - name: "mistralai/mistral-small"
+    provider: "openrouter"
+    tier: 1
+    capabilities: ["text", "json_mode"]
+    price_input_usd_per_1m: 0.10
+    price_output_usd_per_1m: 0.10
+    max_context: 32000
+    max_output: 8192
+    description: "Mistral Small — cheapest OpenRouter model"
+    rating: 0.70
+
+  # ─── Tier 2: Mid API ──────────────────────────────────
+  - name: "google/gemini-3.1-flash"
+    provider: "openrouter"
+    tier: 2
+    capabilities: ["text", "vision", "reasoning", "json_mode"]
+    price_input_usd_per_1m: 0.50
+    price_output_usd_per_1m: 3.00
+    max_context: 1000000
+    max_output: 8192
+    description: "Gemini 3.1 Flash — golden middle"
+    rating: 0.90
+
+  - name: "glm-5-turbo"
+    provider: "zai"
+    tier: 2
+    capabilities: ["text", "reasoning", "json_mode"]
+    price_input_usd_per_1m: 0.20
+    price_output_usd_per_1m: 1.20
+    max_context: 128000
+    max_output: 8192
+    description: "GLM-5 Turbo — compromise without vision"
+    rating: 0.85
+    notes: "Compare with Gemini 3.1 Flash for cost/quality"
+
+  - name: "deepseek/deepseek-chat"
+    provider: "openrouter"
+    tier: 2
+    capabilities: ["text", "reasoning", "json_mode"]
+    price_input_usd_per_1m: 0.27
+    price_output_usd_per_1m: 1.10
+    max_context: 64000
+    max_output: 8192
+    description: "DeepSeek V3 — excellent reasoning for the price"
+    rating: 0.88
+
+  # ─── Tier 3: Strong API (distillation teacher) ────────
+  - name: "google/gemini-3.1-pro"
+    provider: "openrouter"
+    tier: 3
+    capabilities: ["text", "vision", "reasoning", "json_mode", "tools"]
+    price_input_usd_per_1m: 1.25
+    price_output_usd_per_1m: 10.00
+    max_context: 2000000
+    max_output: 8192
+    description: "Gemini 3.1 Pro — top-tier reasoning + vision"
+    rating: 0.95
+
+  - name: "glm-5.2"
+    provider: "zai"
+    tier: 3
+    capabilities: ["text", "reasoning", "json_mode", "tools"]
+    price_input_usd_per_1m: 0.80
+    price_output_usd_per_1m: 6.00
+    max_context: 128000
+    max_output: 8192
+    description: "GLM-5.2 — on par with Gemini 3.1 Pro, no vision"
+    rating: 0.93
+    notes: "May be cheaper than Gemini Pro, compare for task"
+
+  - name: "deepseek/deepseek-r1"
+    provider: "openrouter"
+    tier: 3
+    capabilities: ["text", "reasoning", "json_mode"]
+    price_input_usd_per_1m: 0.55
+    price_output_usd_per_1m: 2.19
+    max_context: 64000
+    max_output: 32768
+    description: "DeepSeek R1 — cheap reasoning teacher"
+    rating: 0.90
+    notes: "Use as distillation teacher when Gemini Pro is too expensive"
+
+  # ─── Tier 999: Human ──────────────────────────────────
+  - name: "browser"
+    provider: "human"
+    tier: 999
+    capabilities: ["text", "vision"]
+    price_input_usd_per_1m: 0.0
+    price_output_usd_per_1m: 0.0
+    max_context: 100000
+    max_output: 100000
+    description: "Human using browser-based LLM (Gemini/Claude/GPT)"
+    rating: 1.0
+    notes: "Free in $ but costs human time (~3-5 min per call)"
+
+  - name: "self"
+    provider: "human"
+    tier: 999
+    capabilities: ["text"]
+    price_input_usd_per_1m: 0.0
+    price_output_usd_per_1m: 0.0
+    max_context: 100000
+    max_output: 100000
+    description: "Human writes response directly (no LLM aid)"
+    rating: 1.0

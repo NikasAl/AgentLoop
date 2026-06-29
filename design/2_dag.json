@@ -1,0 +1,283 @@
+{
+  "_comment": "Pipeline DAG v0.2. Расширенные форматы: добавлены loop (циклы над sub-graph), file (first-class файловые операции), gate (промежуточные human approvals), prerequisites (зависимости от steward requests). Обратная совместимость: старые узлы работают как раньше.",
+
+  "schema_version": "0.2",
+  "hypothesis_id": "h1",
+  "task_id": "scanavi_extract_research_001",
+  "builder_version": "0.2",
+  "generated_at": "2026-06-29T14:05:00Z",
+
+  "prerequisites": [
+    {
+      "type": "custom_tool",
+      "request_id": "sr_001",
+      "status": "resolved",
+      "resolved_to": "custom:latex_validator_v1",
+      "script_path": "tools/custom/latex_validator_v1.py"
+    }
+  ],
+
+  "nodes": [
+    {
+      "id": "pdf_to_images",
+      "type": "bash",
+      "command": "pdftoppm -png -r 300 -f {page_num} -l {page_num} {input_pdf} {work_dir}/page",
+      "input_vars": {
+        "input_pdf": "$INPUT",
+        "page_num": "$PAGE_NUM",
+        "work_dir": "$WORKDIR"
+      },
+      "output": {
+        "kind": "files",
+        "pattern": "{work_dir}/page-*.png",
+        "list_as": "images",
+        "mime": "image/png"
+      },
+      "timeout_sec": 60,
+      "steward_note": "pdftoppm уже в Layer 2 (poppler-utils установлен)"
+    },
+
+    {
+      "id": "extract_problems",
+      "type": "llm",
+      "model": "local:gemma-4-26b",
+      "capabilities_required": ["vision"],
+      "system_prompt_ref": "extractor_system_v1",
+      "user_prompt_template": "На изображении страницы математического задачника найди все задачи.\nВерни JSON: {\"problems\": [{\"number\": \"...\", \"latex\": \"...\", \"raw_text\": \"...\"}]}.\nДля каждой задачи: номер (или 'unknown'), исходный текст, LaTeX-представление.",
+      "image_input": "{pdf_to_images.output.images}",
+      "iterate_over": "image_input",
+      "output_schema_ref": "task_list_v1",
+      "output_to_file": "{work_dir}/extract_problems_output.json",
+      "timeout_sec": 120,
+      "max_retries": 1
+    },
+
+    {
+      "id": "extract_review_gate",
+      "type": "gate",
+      "gate_kind": "human_approval",
+      "trigger_after": "extract_problems",
+      "prompt_template": "Извлечено {extract_problems.output.problems|length} задач. Проверьте корректность перед валидацией LaTeX. Approve / Reject (вернуться к extract) / Modify (отредактировать JSON).",
+      "show_artifacts": ["{work_dir}/extract_problems_output.json"],
+      "approval_modes": ["approve", "reject", "modify"],
+      "on_reject": {"action": "go_back_to", "target": "extract_problems", "feedback_prompt": "Что не так с извлечением?"},
+      "on_modify": {"action": "use_modified_input", "modify_target": "extract_problems_output.json"},
+      "hitl_mode": "manual",
+      "auto_approve_in_mode": "production",
+      "timeout_sec": 1800
+    },
+
+    {
+      "id": "validate_fix_loop",
+      "type": "loop",
+      "loop_kind": "until_condition",
+      "body": ["validate_latex", "fix_invalid"],
+      "exit_condition": "{validate_latex.output.has_invalid} == false",
+      "max_iterations": 3,
+      "on_max_iterations": "continue_with_warning",
+      "carry_over_state": ["{work_dir}/current_problems.json"],
+      "output": "{validate_latex.output}"
+    },
+
+    {
+      "id": "validate_latex",
+      "type": "python",
+      "script_ref": "custom:latex_validator_v1",
+      "input": {
+        "items": "{extract_problems.output.problems}",
+        "work_dir": "$WORKDIR"
+      },
+      "output": {
+        "kind": "json",
+        "schema_ref": "validation_result_v1"
+      },
+      "timeout_sec": 30,
+      "writes_to_state": {
+        "{work_dir}/current_problems.json": "{input.items}"
+      }
+    },
+
+    {
+      "id": "fix_invalid",
+      "type": "llm",
+      "model": "local:gemma-4-26b",
+      "system_prompt_ref": "fixer_system_v1",
+      "user_prompt_template": "Следующие LaTeX выражения невалидны. Исправь их, сохранив математический смысл:\n\n{validate_latex.output.invalid}\n\nОшибки: {validate_latex.output.summary}\n\nВерни JSON: {\"fixed\": [{\"original\": \"...\", \"fixed\": \"...\", \"explanation\": \"...\"}]}",
+      "output_schema_ref": "fixed_list_v1",
+      "timeout_sec": 120,
+      "max_retries": 2,
+      "fallback_on_failure": "skip_and_log",
+      "updates_state": {
+        "{work_dir}/current_problems.json": "merge_fixed_into_problems"
+      }
+    },
+
+    {
+      "id": "write_final_output",
+      "type": "file",
+      "operation": "write",
+      "path": "{work_dir}/final_output.json",
+      "content_from": "{validate_fix_loop.output}",
+      "format": "json",
+      "output": {
+        "kind": "file_ref",
+        "path": "{work_dir}/final_output.json",
+        "mime": "application/json"
+      },
+      "timeout_sec": 5
+    },
+
+    {
+      "id": "log_results",
+      "type": "file",
+      "operation": "append",
+      "path": "{work_dir}/../extraction_log.jsonl",
+      "content_from": {
+        "template": "{\"page\": {page_num}, \"extracted\": {extract_problems.output.problems|length}, \"fixed\": {validate_latex.output.invalid|length}, \"timestamp\": \"{run_timestamp}\"}",
+        "format": "jsonl"
+      },
+      "timeout_sec": 5
+    }
+  ],
+
+  "edges": [
+    {"from": "pdf_to_images", "to": "extract_problems"},
+    {"from": "extract_problems", "to": "extract_review_gate"},
+    {"from": "extract_review_gate", "to": "validate_fix_loop"},
+    {"from": "validate_fix_loop", "to": "write_final_output"},
+    {"from": "write_final_output", "to": "log_results"}
+  ],
+
+  "entry": "pdf_to_images",
+  "exit": "log_results",
+
+  "prompts": {
+    "extractor_system_v1": {
+      "version": "v1",
+      "text": "Ты — извлекатель математических задач. Твоя задача: найти на изображении страницы все задачи и представить их в LaTeX.\n\nПравила:\n1. Используй \\cfrac для вложенных дробей (важно!)\n2. Проверь баланс скобок перед выводом\n3. Не пропускай задачи в подвале страницы\n4. Если номер задачи не указан явно — используй 'unknown'\n5. Возвращай только JSON, без markdown обёртки",
+      "distilled_from": null,
+      "distilled_date": null
+    },
+    "fixer_system_v1": {
+      "version": "v1",
+      "text": "Ты — корректор LaTeX. Тебе дают невалидный LaTeX и описание ошибки. Исправь минимально, сохранив математический смысл.",
+      "distilled_from": null,
+      "distilled_date": null
+    }
+  },
+
+  "schemas": {
+    "task_list_v1": {
+      "type": "object",
+      "properties": {
+        "problems": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "number": {"type": "string"},
+              "latex": {"type": "string"},
+              "raw_text": {"type": "string"}
+            },
+            "required": ["number", "latex"]
+          }
+        }
+      },
+      "required": ["problems"]
+    },
+    "validation_result_v1": {
+      "type": "object",
+      "properties": {
+        "valid": {"type": "array"},
+        "invalid": {"type": "array"},
+        "has_invalid": {"type": "boolean"},
+        "summary": {"type": "string"}
+      },
+      "required": ["valid", "invalid", "has_invalid", "summary"]
+    },
+    "fixed_list_v1": {
+      "type": "object",
+      "properties": {
+        "fixed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "original": {"type": "string"},
+              "fixed": {"type": "string"},
+              "explanation": {"type": "string"}
+            },
+            "required": ["original", "fixed"]
+          }
+        }
+      }
+    }
+  },
+
+  "steward_requests": [
+    {
+      "request_id": "sr_001",
+      "initiator_node": "validate_latex",
+      "query": "validate LaTeX syntax, check bracket balance, identify specific errors",
+      "function_search_result": [],
+      "agent_activated": true,
+      "agent_proposal": {
+        "type": "custom_python",
+        "name": "latex_validator_v1",
+        "dependencies": ["pylatexenc>=2.0"],
+        "implementation_hint": "Use pylatexenc.latex_parse to walk AST, check bracket balance, identify missing/extra braces",
+        "estimated_loc": 50
+      },
+      "safety_check": {
+        "status": "passed",
+        "verdict": "safe",
+        "concerns": [],
+        "network_access_used": false,
+        "fs_access": "read input JSON file, write output JSON file"
+      },
+      "install_status": "installed",
+      "install_method": "pip install pylatexenc==2.10",
+      "script_path": "tools/custom/latex_validator_v1.py",
+      "hitl_required_for": ["pip install (approved by user)"]
+    }
+  ],
+
+  "input_vars_resolved_at_runtime": {
+    "$INPUT": "path to PDF",
+    "$PAGE_NUM": "page number to process",
+    "$WORKDIR": "isolated working directory for this run",
+    "$RUN_ID": "unique run identifier",
+    "$RUN_TIMESTAMP": "ISO timestamp when run started"
+  },
+
+  "_node_types_legend": {
+    "bash": "Выполнение shell-команды в sandbox с timeout",
+    "llm": "Вызов LLM через Provider Layer (local/openrouter/zai/human)",
+    "python": "Выполнение Python-скрипта (core или custom через Steward)",
+    "file": "First-class файловая операция (read/write/append/list) с типизацией",
+    "loop": "Цикл над sub-graph: повторяет body пока exit_condition не true или max_iterations не достигнут",
+    "gate": "Промежуточная точка контроля: human_approval / quality_check / budget_check"
+  },
+
+  "_output_kinds_legend": {
+    "files": "Список файлов по glob-паттерну",
+    "json": "Структурированный JSON-объект по schema",
+    "text": "Простой текст (обычно stdout для bash)",
+    "file_ref": "Ссылка на конкретный файл (для file-узлов)",
+    "media": "Медиа-файл с метаданными (mime, duration, resolution)",
+    "collection": "Коллекция артефактов (множественные валидные выходы, напр. 10 стихов)"
+  },
+
+  "_condition_language_v1": {
+    "syntax": "Простые выражения над {node.output.field}",
+    "examples": [
+      "{validate_latex.output.has_invalid} == false",
+      "{validate_latex.output.has_invalid} == true && {validate_latex.output.invalid|length} > 5",
+      "{extract_problems.output.problems|length} >= 8 || {extract_problems.output.problems|length} == 0",
+      "{run_tests.output.all_passed} == true"
+    ],
+    "operators": ["==", "!=", ">", ">=", "<", "<=", "&&", "||"],
+    "filters": ["|length", "|is_empty", "|contains:'substring'"],
+    "value_types": ["boolean", "integer", "string", "null"]
+  }
+}

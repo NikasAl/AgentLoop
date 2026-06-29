@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project
+.env
+.env.local
+*.sqlite
+*.sqlite-journal
+runs/
+logs/
+worklog.md
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Credentials (NEVER commit)
+*.pem
+*.key
+credentials.json
+secrets.yaml
