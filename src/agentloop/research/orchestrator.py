@@ -81,6 +81,8 @@ class ResearchOrchestrator:
         target_score: float = 0.85,
         auto_select_hypothesis: bool = True,
         hypothesis_selector: Callable[[HypothesisSet], Hypothesis] | None = None,
+        default_provider: str | None = None,
+        default_model: str | None = None,
     ):
         self.work_dir = Path(work_dir)
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -113,6 +115,8 @@ class ResearchOrchestrator:
         self.target_score = target_score
         self.auto_select_hypothesis = auto_select_hypothesis
         self.hypothesis_selector = hypothesis_selector
+        self.default_provider = default_provider
+        self.default_model = default_model
 
     def run(
         self,
@@ -192,6 +196,11 @@ class ResearchOrchestrator:
             # 3. Строим DAG
             print(f"\n🔨 Building pipeline for {selected.id}...")
             build_result = self.builder.build(selected, task_id=task_id)
+
+            # Переписываем модели в DAG на дефолтный провайдер (если задан)
+            if build_result.success and self.default_provider:
+                self._rewrite_dag_models(build_result.dag)
+
             if not build_result.success:
                 print(f"   ✗ Build failed: {build_result.error}")
                 history.append({
@@ -291,3 +300,24 @@ class ResearchOrchestrator:
                 best_result.error = f"Skill save failed: {e}"
 
         return best_result
+
+    def _rewrite_dag_models(self, dag: dict[str, Any]) -> None:
+        """Переписывает провайдеры в model-полях всех LLM-узлов на default_provider.
+
+        LLM может сгенерировать модель вида 'openrouter:gpt-4', но если у нас
+        только local — переписываем на 'local:<default_model>'.
+        """
+        model_name = self.default_model or "gemma-4-26b"
+        full_model = f"{self.default_provider}:{model_name}"
+
+        for node in dag.get("nodes", []):
+            if node.get("type") == "llm" and "model" in node:
+                old_model = node["model"]
+                if ":" in old_model:
+                    old_provider = old_model.split(":", 1)[0]
+                    if old_provider != self.default_provider:
+                        print(f"   ⚠ Rewriting model in '{node['id']}': "
+                              f"{old_model} → {full_model}")
+                        node["model"] = full_model
+                else:
+                    node["model"] = full_model

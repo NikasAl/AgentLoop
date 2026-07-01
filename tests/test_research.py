@@ -274,6 +274,62 @@ class TestPipelineBuilder:
         assert not result.success
         assert "unknown node" in (result.error or "").lower()
 
+    def test_validate_llm_node_requires_user_prompt_template(self, mock_llm, sample_hypothesis):
+        """Builder должен отклонять LLM-узлы без user_prompt_template."""
+        dag = {
+            "nodes": [{
+                "id": "n1",
+                "type": "llm",
+                "model": "local:gemma-4-26b",
+                "system_prompt_ref": "extractor_v1",
+                # НЕТ user_prompt_template — это баг!
+                "json_mode": True,
+            }],
+            "edges": [],
+            "entry": "n1",
+            "exit": "n1",
+        }
+        mock_llm.chat.return_value = Response(
+            content=json.dumps(dag),
+            provider="mock",
+            model="mock",
+            input_tokens=10,
+            output_tokens=5,
+        )
+
+        builder = PipelineBuilder(llm_provider=mock_llm, model="test")
+        result = builder.build(sample_hypothesis)
+        assert not result.success
+        assert "user_prompt_template" in (result.error or "")
+
+    def test_validate_llm_node_with_user_prompt_template(self, mock_llm, sample_hypothesis):
+        """Builder должен принимать LLM-узлы с user_prompt_template."""
+        dag = {
+            "nodes": [{
+                "id": "n1",
+                "type": "llm",
+                "model": "local:gemma-4-26b",
+                "system_prompt_ref": "extractor_v1",
+                "user_prompt_template": "Извлеки задачи: {$INPUT}",
+                "json_mode": True,
+            }],
+            "edges": [],
+            "entry": "n1",
+            "exit": "n1",
+            "prompts": {"extractor_v1": {"text": "Ты извлекатель", "version": "v1"}},
+        }
+        mock_llm.chat.return_value = Response(
+            content=json.dumps(dag),
+            provider="mock",
+            model="mock",
+            input_tokens=10,
+            output_tokens=100,
+        )
+
+        builder = PipelineBuilder(llm_provider=mock_llm, model="test")
+        result = builder.build(sample_hypothesis)
+        assert result.success
+
 
 # ─── Evaluator ─────────────────────────────────────────────
 
@@ -317,6 +373,68 @@ class TestEvaluator:
         completeness_metric = next((m for m in result.metrics if m.name == "output_completeness"), None)
         assert completeness_metric is not None
         assert completeness_metric.value == 0.0
+        # Content quality should be 0 too
+        content_metric = next((m for m in result.metrics if m.name == "output_content_quality"), None)
+        assert content_metric is not None
+        assert content_metric.value == 0.0
+
+    def test_evaluate_content_quality_empty_dict(self):
+        """Главный тест: pipeline вернул {} — content_quality должен быть низким."""
+        result_with_empty = ExecutionResult(
+            run_id="r",
+            success=True,
+            final_output={},
+        )
+        evaluator = Evaluator()
+        result = evaluator.evaluate(result_with_empty)
+
+        content_metric = next((m for m in result.metrics if m.name == "output_content_quality"), None)
+        assert content_metric is not None
+        assert content_metric.value < 0.3  # ниже порога
+        assert not content_metric.passed_threshold
+        # Composite должен быть низким из-за провала content_quality
+        assert result.composite_score <= 0.5
+        # Threshold должен блокировать accept
+        assert result.feedback.get("threshold_blocked") is True
+
+    def test_evaluate_content_quality_meaningful(self):
+        """Pipeline вернул содержательный output — content_quality высокий."""
+        result_with_data = ExecutionResult(
+            run_id="r",
+            success=True,
+            final_output={
+                "professional": "Здравствуйте, уважаемые коллеги!",
+                "casual": "Привет, народ!",
+                "creative": "Йо, челленджеры и творцы!",
+            },
+        )
+        evaluator = Evaluator()
+        result = evaluator.evaluate(result_with_data)
+
+        content_metric = next((m for m in result.metrics if m.name == "output_content_quality"), None)
+        assert content_metric is not None
+        assert content_metric.value > 0.5
+        assert content_metric.passed_threshold
+
+    def test_evaluate_content_quality_only_meta_fields(self):
+        """Output содержит только служебные поля (cost, tokens) — content_quality низкий."""
+        result_meta_only = ExecutionResult(
+            run_id="r",
+            success=True,
+            final_output={
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cost_usd": 0.0,
+                "latency_ms": 1000,
+            },
+        )
+        evaluator = Evaluator()
+        result = evaluator.evaluate(result_meta_only)
+
+        content_metric = next((m for m in result.metrics if m.name == "output_content_quality"), None)
+        assert content_metric is not None
+        # Только служебные поля = нет meaningful данных
+        assert content_metric.value < 0.3
 
     def test_evaluate_with_high_cost(self):
         expensive_result = ExecutionResult(

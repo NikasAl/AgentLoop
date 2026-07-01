@@ -55,6 +55,23 @@ class PipelineBuilder:
 6. Для циклов используй узел типа "loop" с body и exit_condition
 7. Для human approval — узел "gate"
 
+КРИТИЧЕСКИЕ ПРАВИЛА ДЛЯ LLM-УЗЛОВ:
+- ВСЕГДА указывай "user_prompt_template" — это текст, который отправляется как user-сообщение.
+  БЕЗ user_prompt_template модель получит пустой запрос и вернёт пустой результат.
+- "system_prompt_ref" задаёт роль/поведение модели, "user_prompt_template" — конкретную задачу.
+- user_prompt_template может ссылаться на переменные: {$INPUT}, {prev_node.output.field}.
+- Если нужно вызвать LLM без контекста — user_prompt_template = повторение сути задачи.
+
+Пример ПРАВИЛЬНОГО LLM-узла:
+{"id": "n1", "type": "llm", "model": "local:gemma-4-26b",
+ "system_prompt_ref": "extractor_v1",
+ "user_prompt_template": "Извлеки все задачи из следующего текста: {$INPUT}",
+ "json_mode": true}
+
+Пример НЕПРАВИЛЬНОГО (запрещено — нет user_prompt_template):
+{"id": "n1", "type": "llm", "model": "local:gemma-4-26b",
+ "system_prompt_ref": "extractor_v1", "json_mode": true}  ← БЕЗ user_prompt_template!
+
 Формат ответа: JSON с полями:
 - nodes: массив узлов
 - edges: массив {from, to}
@@ -304,6 +321,19 @@ gate: {"id": "n7", "type": "gate", "gate_kind": "human_approval", "prompt_templa
                 return f"Node {i} missing 'id'"
             if "type" not in node:
                 return f"Node {node['id']} missing 'type'"
+
+        # Проверяем LLM-узлы на обязательные поля
+        for node in nodes:
+            if node.get("type") == "llm":
+                node_id = node.get("id", "?")
+                if not node.get("user_prompt_template"):
+                    return (
+                        f"LLM node '{node_id}' missing 'user_prompt_template'. "
+                        f"Without it, the LLM receives an empty prompt and returns empty output. "
+                        f"Add user_prompt_template with the actual task text."
+                    )
+                if not node.get("model"):
+                    return f"LLM node '{node_id}' missing 'model'"
 
         # Проверяем entry и exit
         node_ids = {n["id"] for n in nodes}

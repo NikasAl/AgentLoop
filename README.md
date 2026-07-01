@@ -68,7 +68,37 @@ agentloop/
 └── tests/
 ```
 
-## Текущий модуль: Provider Layer + Tool Catalog
+## Текущий статус: Research Mode MVP
+
+Реализованы 5 модулей (День 1-5 MVP плана):
+- ✅ Provider Layer (4 провайдера)
+- ✅ Tool Catalog + Steward (3 слоя инструментов)
+- ✅ Pipeline Executor (DAG с 6 типами узлов)
+- ✅ Research Mode (hypothesis → build → execute → evaluate → save)
+
+### Быстрый старт
+
+```bash
+# Установка
+git clone https://github.com/NikasAl/AgentLoop.git
+cd AgentLoop
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Настройка ключей (опционально, по умолчанию используется локальная LLM)
+cp .env.example .env
+# Отредактируйте .env: вставьте ключи и проверьте LOCAL_LLM_URL
+
+# Запуск research-агента на простой задаче
+python run_research.py "Сгенерировать 3 варианта приветствия"
+
+# С параметрами
+python run_research.py "Извлечь email из файла" \
+    --input '{"file": "/data/contacts.txt"}' \
+    --iterations 2 \
+    --target-score 0.7 \
+    --verbose
+```
 
 ### Использование провайдеров
 
