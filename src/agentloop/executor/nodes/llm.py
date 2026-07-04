@@ -45,6 +45,13 @@ class LLMNode(BaseNode):
         max_retries: int = 0,
         condition: str | None = None,
         human_provider_config: dict[str, Any] | None = None,
+        # Reasoning-управление (для reasoning-моделей: gemma-4, qwen-3, deepseek-r1).
+        # thinking_budget_tokens — отдельный потолок для chain-of-thought (llama-server).
+        # reasoning_effort — "low"|"medium"|"high" (OpenAI/o1-style, OpenRouter).
+        # auto_retry_on_empty — при пустом content/finish=length повторить с большим max_tokens.
+        thinking_budget_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+        auto_retry_on_empty: bool = True,
         **kwargs: Any,
     ):
         super().__init__(node_id, timeout_sec, max_retries, condition, **kwargs)
@@ -62,6 +69,9 @@ class LLMNode(BaseNode):
         self.max_tokens = max_tokens
         self.output_to_file = output_to_file
         self.human_provider_config = human_provider_config or {}
+        self.thinking_budget_tokens = thinking_budget_tokens
+        self.reasoning_effort = reasoning_effort
+        self.auto_retry_on_empty = auto_retry_on_empty
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "LLMNode":
@@ -84,6 +94,9 @@ class LLMNode(BaseNode):
             max_retries=d.get("max_retries", 0),
             condition=d.get("condition"),
             human_provider_config=d.get("human_provider_config"),
+            thinking_budget_tokens=d.get("thinking_budget_tokens"),
+            reasoning_effort=d.get("reasoning_effort"),
+            auto_retry_on_empty=d.get("auto_retry_on_empty", True),
             fallback_on_failure=d.get("fallback_on_failure", "error"),
             default_output=d.get("default_output"),
         )
@@ -202,11 +215,15 @@ class LLMNode(BaseNode):
         model_name: str,
         iteration_item: Any,
     ) -> NodeResult:
-        """Один LLM-вызов."""
+        """Один LLM-вызов с auto-retry на reasoning-перерасход.
+
+        Reasoning-модели (gemma-4, qwen-3, deepseek-r1) иногда тратят весь токен-бюджет
+        на chain-of-thought, оставляя content пустым (finish_reason=length). В этом случае
+        повторяем вызов с увеличенным max_tokens (до 2x, не более 32768).
+        """
         # Готовим user prompt
         user_prompt = resolver.resolve(self.user_prompt_template)
         if iteration_item is not None and self.iterate_kind == "seeds":
-            # Подставляем seed в prompt (если есть {seed})
             seed = iteration_item
             user_prompt = user_prompt.replace("{seed}", str(seed))
 
@@ -227,30 +244,73 @@ class LLMNode(BaseNode):
 
         messages.append(Message(role="user", content=user_prompt, images=images or None))
 
-        # Вызываем provider
-        try:
-            kwargs: dict[str, Any] = {
-                "temperature": self.temperature,
-                "max_tokens": self.max_tokens,
-                "json_mode": self.json_mode,
-                "timeout_sec": self.timeout_sec,
-            }
-            # Human provider особый
-            if provider.name == "human":
-                kwargs["node_id"] = self.node_id
-                kwargs["reason"] = self.human_provider_config.get("reason", "LLM call")
-                kwargs["model"] = model_name
-
-            response: Response = provider.chat(messages=messages, model=model_name, **kwargs)
-        except ProviderError as e:
-            return NodeResult(
-                node_id=self.node_id,
-                success=False,
-                error=f"LLM call failed: {e}",
+        # Пробуем с исходным max_tokens, при необходимости — retry с увеличенным
+        current_max_tokens = self.max_tokens
+        for attempt in range(3 if self.auto_retry_on_empty else 1):
+            response = self._do_provider_call(
+                provider, model_name, messages, current_max_tokens,
             )
 
-        # Парсим output
-        content = response.content
+            # Если content непустой или finish_reason не length — успех
+            content = response.content or ""
+            if content.strip() and response.finish_reason != "length":
+                return self._build_result(response, resolver)
+
+            # Пустой content при finish_reason=length — reasoning-перерасход
+            if not self.auto_retry_on_empty or response.finish_reason != "length":
+                # Не retry-ситуация — возвращаем как есть (пустой content, но не ошибка)
+                return self._build_result(response, resolver)
+
+            # Retry с увеличенным max_tokens
+            current_max_tokens = min(current_max_tokens * 2, 32768)
+
+        # Все retry-попытки исчерпаны — возвращаем последний результат
+        return self._build_result(response, resolver)
+
+    def _do_provider_call(
+        self,
+        provider: Any,
+        model_name: str,
+        messages: list[Message],
+        max_tokens: int,
+    ) -> Response:
+        """Выполняет один HTTP-вызов к провайдеру с пробросом reasoning-параметров."""
+        kwargs: dict[str, Any] = {
+            "temperature": self.temperature,
+            "max_tokens": max_tokens,
+            "json_mode": self.json_mode,
+            "timeout_sec": self.timeout_sec,
+        }
+        # Reasoning-параметры (для reasoning-моделей)
+        if self.thinking_budget_tokens is not None:
+            kwargs["thinking_budget_tokens"] = self.thinking_budget_tokens
+        if self.reasoning_effort is not None:
+            kwargs["reasoning_effort"] = self.reasoning_effort
+        # Human provider особый
+        if provider.name == "human":
+            kwargs["node_id"] = self.node_id
+            kwargs["reason"] = self.human_provider_config.get("reason", "LLM call")
+            kwargs["model"] = model_name
+
+        try:
+            return provider.chat(messages=messages, model=model_name, **kwargs)
+        except ProviderError as e:
+            # Оборачиваем в Response с ошибкой, чтобы retry-логика могла отличить
+            return Response(
+                content="",
+                provider=provider.name,
+                model=model_name,
+                finish_reason="error",
+                error=str(e),
+            )
+
+    def _build_result(
+        self,
+        response: Response,
+        resolver: VariableResolver,
+    ) -> NodeResult:
+        """Строит NodeResult из Response (общий для первой попытки и retry)."""
+        content = response.content or ""
         output: dict[str, Any] = {"content": content}
 
         # Если json_mode или в output_schema — пробуем распарсить
@@ -262,7 +322,6 @@ class LLMNode(BaseNode):
                 else:
                     output["parsed"] = parsed
             except json.JSONDecodeError:
-                # Пробуем найти JSON в тексте
                 json_str = self._extract_json(content)
                 if json_str:
                     try:
@@ -295,8 +354,9 @@ class LLMNode(BaseNode):
                 "output_tokens": response.output_tokens,
                 "cost_usd": response.cost_usd,
                 "latency_ms": response.latency_ms,
-                "model": model_name,
-                "provider": provider.name,
+                "model": response.model,
+                "provider": response.provider,
+                "finish_reason": response.finish_reason,
             },
         )
 

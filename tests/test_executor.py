@@ -388,6 +388,56 @@ class TestFileNode:
         assert result.success
         assert path.read_text() == "from_prev"
 
+    def test_write_output_includes_content(self, state, tmp_path):
+        """Баг №3: FileNode как exit-узел должен возвращать контент в output,
+        иначе evaluator видит только {path, size_bytes}, а не реальные данные."""
+        path = tmp_path / "greetings.txt"
+        text = "Здравствуйте! Привет! Опа, приветствую!"
+        node = FileNode(
+            node_id="n1",
+            operation="write",
+            path=str(path),
+            content=text,
+        )
+        result = node.execute(state)
+        assert result.success
+        # Раньше output = {path, size_bytes} → evaluator ставил низкий score
+        # даже при идеальных данных. Теперь контент в output.
+        assert result.output["content"] == text
+        assert result.output["path"] == str(path)
+        assert result.output["size_bytes"] > 0
+
+    def test_write_output_includes_content_from_var(self, state, tmp_path):
+        """Та же гарантия для content_from (запись данных из upstream-узла)."""
+        upstream_data = {"formal": "Здравствуйте", "friendly": "Привет", "quirky": "Опа"}
+        state.set_output("gen", {"output": upstream_data})
+        path = tmp_path / "out.json"
+        node = FileNode(
+            node_id="n1",
+            operation="write",
+            path=str(path),
+            content_from="{gen.output}",
+            format="json",
+        )
+        result = node.execute(state)
+        assert result.success
+        # Контент должен присутствовать в output независимо от источника
+        assert "formal" in result.output["content"]
+        assert "Здравствуйте" in result.output["content"]
+
+    def test_append_output_includes_content(self, state, tmp_path):
+        """append тоже должен возвращать контент в output для exit-узла FileNode."""
+        path = tmp_path / "log.txt"
+        node = FileNode(
+            node_id="n1",
+            operation="append",
+            path=str(path),
+            content="line0",
+        )
+        result = node.execute(state)
+        assert result.success
+        assert "line0" in result.output["content"]
+
 
 # ─── PythonNode ────────────────────────────────────────────
 
@@ -456,6 +506,38 @@ class TestPythonNode:
         )
         result = node.execute(state)
         assert not result.success
+
+
+# ─── resolve_script_path (shared helper) ──────────────────
+
+
+class TestResolveScriptPath:
+    """Тестирует общий helper резолва script_ref.
+    Используется и валидацией builder'а, и выполнением PythonNode."""
+
+    def test_core_existing(self):
+        from agentloop.executor.nodes.python import resolve_script_path
+        assert resolve_script_path("core:json_merge") is not None
+
+    def test_core_unknown_returns_none(self):
+        from agentloop.executor.nodes.python import resolve_script_path
+        # Ловит выдуманный LLM скрипт вроде core:json_validate
+        assert resolve_script_path("core:json_validate") is None
+        assert resolve_script_path("core:totally_made_up") is None
+
+    def test_custom_unknown_returns_none(self):
+        from agentloop.executor.nodes.python import resolve_script_path
+        assert resolve_script_path("custom:does_not_exist_v999") is None
+
+    def test_absolute_path_existing(self, tmp_path):
+        from agentloop.executor.nodes.python import resolve_script_path
+        f = tmp_path / "s.py"
+        f.write_text("def main(d): return d\n")
+        assert resolve_script_path(str(f)) is not None
+
+    def test_absolute_path_missing_returns_none(self, tmp_path):
+        from agentloop.executor.nodes.python import resolve_script_path
+        assert resolve_script_path(str(tmp_path / "nope.py")) is None
 
 
 # ─── GateNode ──────────────────────────────────────────────

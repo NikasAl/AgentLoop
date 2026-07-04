@@ -139,7 +139,13 @@ class FileNode(BaseNode):
         return NodeResult(
             node_id=self.node_id,
             success=True,
-            output={"path": str(path), "size_bytes": len(content.encode("utf-8"))},
+            output={
+                "path": str(path),
+                "size_bytes": len(content.encode("utf-8")),
+                # Контент в output, чтобы при использовании FileNode как exit-узла
+                # evaluator видел реальные данные, а не только путь/размер.
+                "content": content,
+            },
             files=[str(path)],
         )
 
@@ -171,7 +177,12 @@ class FileNode(BaseNode):
         return NodeResult(
             node_id=self.node_id,
             success=True,
-            output={"path": str(path), "appended_bytes": len(content.encode("utf-8"))},
+            output={
+                "path": str(path),
+                "appended_bytes": len(content.encode("utf-8")),
+                # Контент добавленной порции — для видимости при exit-узле FileNode.
+                "content": content,
+            },
             files=[str(path)],
         )
 

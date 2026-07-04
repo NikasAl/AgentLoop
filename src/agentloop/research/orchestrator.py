@@ -83,6 +83,8 @@ class ResearchOrchestrator:
         hypothesis_selector: Callable[[HypothesisSet], Hypothesis] | None = None,
         default_provider: str | None = None,
         default_model: str | None = None,
+        thinking_budget_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ):
         self.work_dir = Path(work_dir)
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -117,6 +119,9 @@ class ResearchOrchestrator:
         self.hypothesis_selector = hypothesis_selector
         self.default_provider = default_provider
         self.default_model = default_model
+        # Reasoning-параметры: пробрасываются в LLM-узлы DAG через _rewrite_dag_models
+        self.thinking_budget_tokens = thinking_budget_tokens
+        self.reasoning_effort = reasoning_effort
 
     def run(
         self,
@@ -231,7 +236,11 @@ class ResearchOrchestrator:
             if execution_result.success:
                 print(f"   ✓ Execution succeeded")
             else:
+                # Печатаем не только ключи, но и тексты ошибок упавших узлов —
+                # иначе (как было раньше) реальная причина скрыта за ['n1'].
                 print(f"   ✗ Execution failed: {list(execution_result.errors.keys())}")
+                for node_id, error in execution_result.errors.items():
+                    print(f"      • {node_id}: {error}")
 
             # 5. Оцениваем
             print(f"\n📊 Evaluating...")
@@ -269,7 +278,14 @@ class ResearchOrchestrator:
                 break
 
             print(f"\n   Score {evaluation_result.composite_score:.3f} < target {self.target_score}")
-            print(f"   Feedback: {evaluation_result.feedback.get('suggestions_for_next_iteration', [])[:2]}")
+            # Сначала weaknesses (точные причины: какой узел и почему упал),
+            # затем suggestions — иначе корневая причина скрыта.
+            weaknesses = evaluation_result.feedback.get("weaknesses", [])
+            if weaknesses:
+                print(f"   ⚠ Причины низкого score:")
+                for w in weaknesses[:3]:
+                    print(f"      • {w}")
+            print(f"   💡 Suggestions: {evaluation_result.feedback.get('suggestions_for_next_iteration', [])[:2]}")
 
         best_result.iterations_run = min(iteration, self.max_iterations)
         best_result.history = history
@@ -302,7 +318,8 @@ class ResearchOrchestrator:
         return best_result
 
     def _rewrite_dag_models(self, dag: dict[str, Any]) -> None:
-        """Переписывает провайдеры в model-полях всех LLM-узлов на default_provider.
+        """Переписывает провайдеры в model-полях всех LLM-узлов на default_provider
+        и пробрасывает reasoning-параметры.
 
         LLM может сгенерировать модель вида 'openrouter:gpt-4', но если у нас
         только local — переписываем на 'local:<default_model>'.
@@ -311,13 +328,19 @@ class ResearchOrchestrator:
         full_model = f"{self.default_provider}:{model_name}"
 
         for node in dag.get("nodes", []):
-            if node.get("type") == "llm" and "model" in node:
-                old_model = node["model"]
-                if ":" in old_model:
-                    old_provider = old_model.split(":", 1)[0]
-                    if old_provider != self.default_provider:
-                        print(f"   ⚠ Rewriting model in '{node['id']}': "
-                              f"{old_model} → {full_model}")
+            if node.get("type") == "llm":
+                if "model" in node:
+                    old_model = node["model"]
+                    if ":" in old_model:
+                        old_provider = old_model.split(":", 1)[0]
+                        if old_provider != self.default_provider:
+                            print(f"   ⚠ Rewriting model in '{node['id']}': "
+                                  f"{old_model} → {full_model}")
+                            node["model"] = full_model
+                    else:
                         node["model"] = full_model
-                else:
-                    node["model"] = full_model
+                # Пробрасываем reasoning-параметры в LLM-узлы DAG
+                if self.thinking_budget_tokens is not None:
+                    node["thinking_budget_tokens"] = self.thinking_budget_tokens
+                if self.reasoning_effort is not None:
+                    node["reasoning_effort"] = self.reasoning_effort

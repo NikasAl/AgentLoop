@@ -108,7 +108,8 @@ class ZAIProvider:
             latency_ms = int((time.time() - start) * 1000)
             data = r.json()
 
-            content = data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            content = choice["message"]["content"]
             usage = data.get("usage", {})
 
             cost = self._compute_cost(model, usage)
@@ -121,6 +122,7 @@ class ZAIProvider:
                 output_tokens=usage.get("completion_tokens", 0),
                 cost_usd=cost,
                 latency_ms=latency_ms,
+                finish_reason=choice.get("finish_reason"),
                 raw=data,
             )
 

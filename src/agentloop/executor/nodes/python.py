@@ -25,6 +25,33 @@ from .base import BaseNode, NodeResult
 CORE_SCRIPTS_DIR = Path(__file__).parent / "core_scripts"
 
 
+def resolve_script_path(script_ref: str) -> Path | None:
+    """Разрешает script_ref в путь к файлу.
+
+    Единый источник правды для валидации (PipelineBuilder) и выполнения (PythonNode),
+    чтобы они не разойлись в трактовке префиксов core:/custom:/абсолютный путь.
+
+    script_ref может быть:
+    - "core:json_merge"        → core_scripts/json_merge.py
+    - "custom:latex_validator" → ~/.agentloop/custom_tools/latex_validator.py
+    - "/abs/path/to/script.py" → прямой путь
+    Возвращает Path, если файл существует, иначе None.
+    """
+    if script_ref.startswith("core:"):
+        name = script_ref[5:]
+        path = CORE_SCRIPTS_DIR / f"{name}.py"
+        return path if path.exists() else None
+
+    if script_ref.startswith("custom:"):
+        name = script_ref[7:]
+        custom_dir = Path.home() / ".agentloop" / "custom_tools"
+        path = custom_dir / f"{name}.py"
+        return path if path.exists() else None
+
+    path = Path(script_ref)
+    return path if path.exists() else None
+
+
 class PythonNode(BaseNode):
     """Узел выполнения Python-скрипта."""
 
@@ -179,21 +206,5 @@ class PythonNode(BaseNode):
             )
 
     def _resolve_script_path(self) -> Path | None:
-        """Разрешает script_ref в путь к файлу."""
-        # "core:json_merge" → core_scripts/json_merge.py
-        if self.script_ref.startswith("core:"):
-            name = self.script_ref[5:]
-            path = CORE_SCRIPTS_DIR / f"{name}.py"
-            return path if path.exists() else None
-
-        # "custom:latex_validator_v1" → ~/.agentloop/custom_tools/latex_validator_v1.py
-        elif self.script_ref.startswith("custom:"):
-            name = self.script_ref[7:]
-            custom_dir = Path.home() / ".agentloop" / "custom_tools"
-            path = custom_dir / f"{name}.py"
-            return path if path.exists() else None
-
-        # Прямой путь
-        else:
-            path = Path(self.script_ref)
-            return path if path.exists() else None
+        """Разрешает script_ref в путь к файлу (делегирует общему helper-у)."""
+        return resolve_script_path(self.script_ref)

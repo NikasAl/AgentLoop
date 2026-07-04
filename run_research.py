@@ -84,6 +84,15 @@ def main():
     parser.add_argument("--model", default=None, help="Модель для LLM (auto-detect по умолчанию)")
     parser.add_argument("--no-skill-save", action="store_true", help="Не сохранять навык в Skill Library")
     parser.add_argument("--dry-run", action="store_true", help="Только проверить подключение, не запускать")
+    parser.add_argument("--steward", action="store_true",
+                        help="Включить Steward для создания custom-инструментов (с полным HITL: "
+                             "каждый инструмент требует ручного подтверждения)")
+    parser.add_argument("--thinking-budget", type=int, default=None,
+                        help="Лимит токенов для reasoning (chain-of-thought) в reasoning-моделях. "
+                             "Отдельный бюджет, не урезающий max_tokens финального ответа. "
+                             "Поддерживается llama-server для gemma-4, qwen-3, deepseek-r1.")
+    parser.add_argument("--reasoning-effort", choices=["low", "medium", "high"], default=None,
+                        help="Уровень reasoning для моделей, поддерживающих параметр (OpenAI o1, OpenRouter).")
     parser.add_argument("--verbose", action="store_true", help="Подробный вывод")
 
     args = parser.parse_args()
@@ -169,6 +178,18 @@ def main():
     # ─── Подготовка Research Orchestrator ───────────────────
     catalog = ToolCatalog()
 
+    # Steward для создания custom-инструментов.
+    # По умолчанию выключен: его создание custom-тулов интерактивно (полный HITL —
+    # каждый инструмент требует ручного подтверждения). Включается флагом --steward.
+    steward = None
+    if args.steward:
+        steward = Steward(
+            catalog=catalog,
+            llm_provider=llm,
+            human_approval=True,  # полный HITL: подтверждение каждого custom-инструмента
+        )
+        print(f"   🛡 Steward: включён (полный HITL для custom-инструментов)")
+
     task_id = args.task_id or f"task_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     work_dir = args.work_dir or f"/tmp/agentloop_research/{task_id}"
 
@@ -197,6 +218,7 @@ def main():
         work_dir=work_dir,
         llm_provider=llm,
         catalog=catalog,
+        steward=steward,
         cost_tracker=cost_tracker,
         hypothesis_model=model,
         builder_model=model,
@@ -206,6 +228,8 @@ def main():
         auto_select_hypothesis=True,
         default_provider=args.provider,
         default_model=model,
+        thinking_budget_tokens=args.thinking_budget,
+        reasoning_effort=args.reasoning_effort,
     )
 
     # ─── Запуск ─────────────────────────────────────────────

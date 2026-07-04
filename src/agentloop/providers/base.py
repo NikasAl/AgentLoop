@@ -62,6 +62,11 @@ class Response:
     # Latency
     latency_ms: int = 0
 
+    # Finish reason: "stop" | "length" | "tool_calls" | "content_filter" | ...
+    # "length" означает, что ответ обрезан по max_tokens — критично для
+    # обнаружения reasoning-перерасхода (модель «задумалась» на весь бюджет).
+    finish_reason: str | None = None
+
     # Human-specific
     human_time_sec: int = 0  # для HumanProvider
 

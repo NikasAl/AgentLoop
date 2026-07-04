@@ -99,7 +99,8 @@ class OpenRouterProvider:
         latency_ms = int((time.time() - start) * 1000)
         data = r.json()
 
-        content = data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        content = choice["message"]["content"]
         usage = data.get("usage", {})
 
         # Считаем cost по нашим ценам из models.yaml
@@ -114,6 +115,7 @@ class OpenRouterProvider:
             cache_read_tokens=usage.get("prompt_tokens_details", {}).get("cached_tokens", 0),
             cost_usd=cost,
             latency_ms=latency_ms,
+            finish_reason=choice.get("finish_reason"),
             raw=data,
         )
 

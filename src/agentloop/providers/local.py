@@ -49,6 +49,11 @@ class LocalProvider:
         max_tokens: int = 2048,
         json_mode: bool = False,
         timeout_sec: int = 300,
+        # Управление reasoning-бюджетом (для reasoning-моделей: gemma-4, qwen-3, deepseek-r1).
+        # llama-server поддерживает оба параметра; thinking_budget_tokens задаёт отдельный
+        # потолок для chain-of-thought, не урезая max_tokens финального ответа.
+        thinking_budget_tokens: int | None = None,
+        reasoning_effort: str | None = None,  # "low" | "medium" | "high"
         **kwargs: Any,
     ) -> Response:
         url = f"{self.base_url}/v1/chat/completions"
@@ -61,6 +66,10 @@ class LocalProvider:
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if thinking_budget_tokens is not None:
+            payload["thinking_budget_tokens"] = thinking_budget_tokens
+        if reasoning_effort is not None:
+            payload["reasoning_effort"] = reasoning_effort
 
         start = time.time()
         try:
@@ -78,7 +87,8 @@ class LocalProvider:
         latency_ms = int((time.time() - start) * 1000)
         data = r.json()
 
-        content = data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        content = choice["message"]["content"]
         usage = data.get("usage", {})
 
         return Response(
@@ -89,6 +99,7 @@ class LocalProvider:
             output_tokens=usage.get("completion_tokens", 0),
             cost_usd=0.0,  # local = free
             latency_ms=latency_ms,
+            finish_reason=choice.get("finish_reason"),
             raw=data,
         )
 

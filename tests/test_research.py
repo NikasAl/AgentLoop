@@ -330,6 +330,140 @@ class TestPipelineBuilder:
         result = builder.build(sample_hypothesis)
         assert result.success
 
+    def test_validate_python_node_unknown_core_script(self, mock_llm, sample_hypothesis):
+        """Builder должен отклонять python-узлы с несуществующим core-скриптом
+        (ловит случай 'core:json_validate', выдуманный LLM в gemini-iter3)."""
+        dag = {
+            "nodes": [{
+                "id": "n1",
+                "type": "python",
+                "script_ref": "core:json_validate",  # НЕ существует
+                "input": {"data": "{}"},
+            }],
+            "edges": [],
+            "entry": "n1",
+            "exit": "n1",
+        }
+        mock_llm.chat.return_value = Response(
+            content=json.dumps(dag),
+            provider="mock",
+            model="mock",
+            input_tokens=10,
+            output_tokens=5,
+        )
+
+        builder = PipelineBuilder(llm_provider=mock_llm, model="test")
+        result = builder.build(sample_hypothesis)
+        assert not result.success
+        assert "unknown core script" in (result.error or "")
+        assert "json_validate" in (result.error or "")
+
+    def test_validate_python_node_existing_core_script_ok(self, mock_llm, sample_hypothesis):
+        """Существующий core-скрипт должен проходить валидацию."""
+        dag = {
+            "nodes": [{
+                "id": "n1",
+                "type": "python",
+                "script_ref": "core:json_merge",  # существует
+                "input": {"a": "{}"},
+            }],
+            "edges": [],
+            "entry": "n1",
+            "exit": "n1",
+        }
+        mock_llm.chat.return_value = Response(
+            content=json.dumps(dag),
+            provider="mock",
+            model="mock",
+            input_tokens=10,
+            output_tokens=5,
+        )
+
+        builder = PipelineBuilder(llm_provider=mock_llm, model="test")
+        result = builder.build(sample_hypothesis)
+        assert result.success
+
+    def test_validate_python_node_custom_script_not_rejected(self, mock_llm, sample_hypothesis):
+        """Custom-скрипты не фейлятся в builder-валидации (Steward может создать их позже)."""
+        dag = {
+            "nodes": [{
+                "id": "n1",
+                "type": "python",
+                "script_ref": "custom:latex_validator_v1",  # может не существовать в тест-окружении
+                "input": {},
+            }],
+            "edges": [],
+            "entry": "n1",
+            "exit": "n1",
+        }
+        mock_llm.chat.return_value = Response(
+            content=json.dumps(dag),
+            provider="mock",
+            model="mock",
+            input_tokens=10,
+            output_tokens=5,
+        )
+
+        builder = PipelineBuilder(llm_provider=mock_llm, model="test")
+        result = builder.build(sample_hypothesis)
+        assert result.success
+
+    def test_validate_unsatisfied_prerequisite(self, mock_llm, sample_hypothesis):
+        """Builder должен отклонять пайплайны с неудовлетворёнными prerequisites
+        (ловит случай 'ollama_local_setup required' из gemini-iter2)."""
+        dag = {
+            "nodes": [{"id": "n1", "type": "bash", "command": "ollama serve &", "timeout_sec": 10}],
+            "edges": [],
+            "entry": "n1",
+            "exit": "n1",
+            "prerequisites": [
+                {"type": "tool", "request_id": "ollama_local_setup", "status": "required"},
+            ],
+        }
+        mock_llm.chat.return_value = Response(
+            content=json.dumps(dag),
+            provider="mock",
+            model="mock",
+            input_tokens=10,
+            output_tokens=5,
+        )
+
+        builder = PipelineBuilder(llm_provider=mock_llm, model="test")
+        result = builder.build(sample_hypothesis)
+        assert not result.success
+        assert "prerequisite" in (result.error or "").lower()
+        assert "ollama_local_setup" in (result.error or "")
+
+    def test_validate_satisfied_prerequisite_ok(self, mock_llm, sample_hypothesis):
+        """Prerequisites со status 'satisfied' не должны блокировать пайплайн."""
+        dag = {
+            "nodes": [{"id": "n1", "type": "bash", "command": "echo ok", "timeout_sec": 5}],
+            "edges": [],
+            "entry": "n1",
+            "exit": "n1",
+            "prerequisites": [
+                {"type": "tool", "request_id": "python3", "status": "satisfied"},
+            ],
+        }
+        mock_llm.chat.return_value = Response(
+            content=json.dumps(dag),
+            provider="mock",
+            model="mock",
+            input_tokens=10,
+            output_tokens=5,
+        )
+
+        builder = PipelineBuilder(llm_provider=mock_llm, model="test")
+        result = builder.build(sample_hypothesis)
+        assert result.success
+
+    def test_system_prompt_lists_available_core_scripts(self, mock_llm):
+        """Системный промпт должен содержать реальные core-скрипты,
+        чтобы LLM знал о доступных инструментах и не выдумывал новые."""
+        builder = PipelineBuilder(llm_provider=mock_llm, model="test")
+        assert "json_merge" in builder.SYSTEM_PROMPT
+        assert "quick_evaluate" in builder.SYSTEM_PROMPT
+
 
 # ─── Evaluator ─────────────────────────────────────────────
 

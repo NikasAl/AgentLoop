@@ -18,6 +18,7 @@ from typing import Any
 from ..providers import Message, Provider
 from ..providers.base import Response
 from ..tools import Steward, ToolCatalog, core_tools_for_builder_prompt
+from ..executor.nodes.python import resolve_script_path
 from .hypothesis import Hypothesis
 
 
@@ -61,6 +62,19 @@ class PipelineBuilder:
 - "system_prompt_ref" задаёт роль/поведение модели, "user_prompt_template" — конкретную задачу.
 - user_prompt_template может ссылаться на переменные: {$INPUT}, {prev_node.output.field}.
 - Если нужно вызвать LLM без контекста — user_prompt_template = повторение сути задачи.
+
+КРИТИЧЕСКИЕ ПРАВИЛА ДЛЯ BASH-УЗЛОВ:
+- НЕ ВЫДУМЫВАЙ внешние утилиты. Если задаче нужен сторонний инструмент (ollama, docker, pandoc,
+  libreoffice, tesseract и т.п.), которого может не быть в окружении — НЕ добавляй bash-узлы
+  для его запуска/установки. Вместо этого реши задачу доступными средствами (LLM-узлы, core-скрипты,
+  стандартные утилиты вроде echo/cat/grep/python3).
+- Если внешний инструмент ОБЯЗАТЕЛЕНЕН — добавь его в prerequisites со status "required",
+  но предпочти альтернативу без внешних зависимостей.
+
+КРИТИЧЕСКИЕ ПРАВИЛА ДЛЯ PYTHON-УЗЛОВ:
+- script_ref с префиксом "core:" может ссылаться ТОЛЬКО на существующие core-скрипты:
+  {available_core_scripts}. НЕ ВЫДУМЫВАЙ несуществующие core-скрипты (например, core:json_validate).
+- Для специализированной логики используй "custom:" (Steward создаст инструмент) или "llm"-узлы.
 
 Пример ПРАВИЛЬНОГО LLM-узла:
 {"id": "n1", "type": "llm", "model": "local:gemma-4-26b",
@@ -110,6 +124,11 @@ gate: {"id": "n7", "type": "gate", "gate_kind": "human_approval", "prompt_templa
         self.catalog = catalog
         self.steward = steward
         self.max_steward_calls = max_steward_calls
+        # Подставляем реальный список доступных core-скриптов в системный промпт,
+        # чтобы LLM не выдумывал несуществующие вроде core:json_validate.
+        self.SYSTEM_PROMPT = self.SYSTEM_PROMPT.replace(
+            "{available_core_scripts}", ", ".join(self._available_core_scripts())
+        )
 
     def build(self, hypothesis: Hypothesis, task_id: str = "task") -> BuildResult:
         """
@@ -179,29 +198,42 @@ gate: {"id": "n7", "type": "gate", "gate_kind": "human_approval", "prompt_templa
         # Строим промпт для LLM
         user_prompt = self._build_user_prompt(hypothesis, custom_tools_created)
 
-        # Вызываем LLM
+        # Вызываем LLM с retry на reasoning-перерасход.
+        # Reasoning-модели иногда тратят весь бюджет на chain-of-thought,
+        # оставляя content пустым (finish_reason=length).
         start = time.time()
-        try:
-            response: Response = self.llm.chat(
-                messages=[
-                    Message(role="system", content=self.SYSTEM_PROMPT),
-                    Message(role="user", content=user_prompt),
-                ],
-                model=self.model,
-                temperature=0.3,  # ниже температура для детерминированности
-                max_tokens=4096,
-                json_mode=True,
-                timeout_sec=300,
-            )
-        except Exception as e:
-            return BuildResult(
-                hypothesis_id=hypothesis.id,
-                dag={},
-                success=False,
-                steward_requests=steward_requests_log,
-                custom_tools_created=custom_tools_created,
-                error=f"LLM call failed: {e}",
-            )
+        response: Response | None = None
+        current_max_tokens = 8192  # reasoning-моделям нужно больше (было 4096)
+        for attempt in range(3):
+            try:
+                response = self.llm.chat(
+                    messages=[
+                        Message(role="system", content=self.SYSTEM_PROMPT),
+                        Message(role="user", content=user_prompt),
+                    ],
+                    model=self.model,
+                    temperature=0.3,  # ниже температура для детерминированности
+                    max_tokens=current_max_tokens,
+                    json_mode=True,
+                    timeout_sec=300,
+                )
+            except Exception as e:
+                return BuildResult(
+                    hypothesis_id=hypothesis.id,
+                    dag={},
+                    success=False,
+                    steward_requests=steward_requests_log,
+                    custom_tools_created=custom_tools_created,
+                    error=f"LLM call failed: {e}",
+                )
+
+            content = response.content or ""
+            # Если content непустой или не reasoning-перерасход — выходим
+            if content.strip() or response.finish_reason != "length":
+                break
+
+            # Retry с увеличенным max_tokens
+            current_max_tokens = min(current_max_tokens * 2, 32768)
 
         # Парсим DAG
         dag = self._parse_dag(response.content)
@@ -281,7 +313,21 @@ gate: {"id": "n7", "type": "gate", "gate_kind": "human_approval", "prompt_templa
         return "\n".join(parts)
 
     def _parse_dag(self, content: str) -> dict[str, Any] | None:
-        """Парсит DAG из ответа LLM."""
+        """Парсит DAG из ответа LLM.
+
+        Устойчив к:
+        - markdown-обёрткам (```json ... ```)
+        - обрезанному JSON (reasoning-модель не успела закрыть скобки)
+        - JSON, встроенному в текст (ищет первый { ... })
+        """
+        # Strip markdown code fences
+        stripped = self._strip_code_fences(content)
+        if stripped != content:
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError:
+                pass
+
         # Пробуем прямой JSON
         try:
             return json.loads(content)
@@ -296,10 +342,72 @@ gate: {"id": "n7", "type": "gate", "gate_kind": "human_approval", "prompt_templa
         if end == -1 or end <= start:
             return None
 
+        candidate = content[start : end + 1]
         try:
-            return json.loads(content[start : end + 1])
+            return json.loads(candidate)
         except json.JSONDecodeError:
-            return None
+            # Repair: возможно JSON обрезан — попытаемся закрыть незакрытые скобки
+            repaired = self._repair_truncated_json(candidate)
+            if repaired != candidate:
+                try:
+                    return json.loads(repaired)
+                except json.JSONDecodeError:
+                    pass
+
+        return None
+
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        """Убирает ```json / ``` обёртки, которые LLM иногда добавляет."""
+        import re
+        # ```json ... ``` или ``` ... ```
+        pattern = re.compile(r"```(?:json)?\s*\n?(.*?)\n?\s*```", re.DOTALL)
+        m = pattern.search(text)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+        return text
+
+    @staticmethod
+    def _repair_truncated_json(text: str) -> str:
+        """Пытается закрыть незакрытые скобки/кавычки в обрезанном JSON.
+
+        Максимальная глубина ремонта — 5 уровней. Не пытается вставлять
+        отсутствующие значения (это задача retry с бОльшим max_tokens).
+        """
+        # Убираем висячую запятую перед обрезом
+        text = text.rstrip()
+        while text and text[-1] in (",", " ", "\n", "\t"):
+            text = text[:-1]
+
+        # Считаем незакрытые { [ " (в порядке, обратном появлению)
+        open_braces = 0
+        open_brackets = 0
+        open_quotes = False
+        i = 0
+        while i < len(text):
+            c = text[i]
+            if c == '"' and (i == 0 or text[i - 1] != "\\"):
+                open_quotes = not open_quotes
+            elif not open_quotes:
+                if c == "{":
+                    open_braces += 1
+                elif c == "}":
+                    open_braces -= 1
+                elif c == "[":
+                    open_brackets += 1
+                elif c == "]":
+                    open_brackets -= 1
+            i += 1
+
+        if open_quotes:
+            text += '"'
+        # Закрываем в обратном порядке
+        for _ in range(min(open_brackets, 5)):
+            text += "]"
+        for _ in range(min(open_braces, 5)):
+            text += "}"
+
+        return text
 
     def _validate_dag(self, dag: dict[str, Any]) -> str | None:
         """Валидирует структуру DAG. Возвращает ошибку или None."""
@@ -335,6 +443,26 @@ gate: {"id": "n7", "type": "gate", "gate_kind": "human_approval", "prompt_templa
                 if not node.get("model"):
                     return f"LLM node '{node_id}' missing 'model'"
 
+        # Проверяем python-узлы: script_ref должен разрешаться в существующий файл.
+        # Готовых core-скриптов мало, и LLM нередко выдумывает несуществующие вроде
+        # 'core:json_validate' — такой узел всё равно упадёт в runtime, поэтому ловим заранее.
+        # Custom-инструменты могут быть созданы Steward'ом уже после build(),
+        # поэтому для custom: не фейлим здесь (runtime проверит сам).
+        for node in nodes:
+            if node.get("type") == "python":
+                node_id = node.get("id", "?")
+                script_ref = node.get("script_ref")
+                if not script_ref:
+                    return f"Python node '{node_id}' missing 'script_ref'"
+                if script_ref.startswith("core:"):
+                    if resolve_script_path(script_ref) is None:
+                        name = script_ref[5:]
+                        return (
+                            f"Python node '{node_id}' references unknown core script '{script_ref}'. "
+                            f"No 'core_scripts/{name}.py' exists. "
+                            f"Available core scripts: {self._available_core_scripts()}."
+                        )
+
         # Проверяем entry и exit
         node_ids = {n["id"] for n in nodes}
         if "entry" in dag and dag["entry"] not in node_ids:
@@ -354,4 +482,26 @@ gate: {"id": "n7", "type": "gate", "gate_kind": "human_approval", "prompt_templa
             if edge["to"] not in node_ids:
                 return f"Edge to unknown node: {edge['to']}"
 
+        # Проверяем prerequisites: если билдер сам отметил зависимость как
+        # неудовлетворённую (status != satisfied), пайплайн всё равно упадёт в runtime
+        # (например, 'ollama: command not found'). Фейлим сразу с понятной причиной.
+        prerequisites = dag.get("prerequisites", [])
+        for prereq in prerequisites:
+            if not isinstance(prereq, dict):
+                continue
+            status = prereq.get("status")
+            request_id = prereq.get("request_id", "?")
+            if status and status != "satisfied":
+                return (
+                    f"Unsatisfied prerequisite '{request_id}' (status='{status}'). "
+                    f"The pipeline depends on '{request_id}' which is not available in this environment. "
+                    f"Reformulate the hypothesis without external dependencies, or satisfy the prerequisite."
+                )
+
         return None
+
+    @staticmethod
+    def _available_core_scripts() -> list[str]:
+        """Возвращает список доступных core-скриптов для подсказки в ошибке."""
+        from ..executor.nodes.python import CORE_SCRIPTS_DIR
+        return sorted(p.stem for p in CORE_SCRIPTS_DIR.glob("*.py") if p.stem != "__init__")
