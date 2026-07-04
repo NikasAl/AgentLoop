@@ -246,15 +246,23 @@ class LLMNode(BaseNode):
 
         # Пробуем с исходным max_tokens, при необходимости — retry с увеличенным
         current_max_tokens = self.max_tokens
+        response = None
         for attempt in range(3 if self.auto_retry_on_empty else 1):
             response = self._do_provider_call(
                 provider, model_name, messages, current_max_tokens,
             )
 
-            # Если content непустой или finish_reason не length — успех
+            # Если content непустой и нет ошибки — успех
             content = response.content or ""
-            if content.strip() and response.finish_reason != "length":
+            if content.strip() and response.finish_reason != "length" and response.error is None:
                 return self._build_result(response, resolver)
+
+            # Транзиентные ошибки (timeout, 429, network) — retry с тем же max_tokens
+            if response.error is not None and self._is_transient(response.error):
+                # Ждём перед retry (exponential backoff: 2s, 4s, 8s)
+                import time as _time
+                _time.sleep(2 ** attempt)
+                continue
 
             # Пустой content при finish_reason=length — reasoning-перерасход
             if not self.auto_retry_on_empty or response.finish_reason != "length":
@@ -265,7 +273,30 @@ class LLMNode(BaseNode):
             current_max_tokens = min(current_max_tokens * 2, 32768)
 
         # Все retry-попытки исчерпаны — возвращаем последний результат
+        if response is None:
+            response = Response(
+                content="",
+                provider=provider.name,
+                model=model_name,
+                finish_reason="error",
+                error="No response from provider after retries",
+            )
         return self._build_result(response, resolver)
+
+    @staticmethod
+    def _is_transient(error_msg: str) -> bool:
+        """Определяет, является ли ошибка транзиентной (достоинной retry)."""
+        error_lower = error_msg.lower()
+        transient_patterns = [
+            "timeout", "timed out",
+            "connection error", "connection reset", "connection refused",
+            "read timeout", "write timeout",
+            "rate limit", "429", "too many requests",
+            "502", "503", "504",  # server errors
+            "service unavailable", "bad gateway", "gateway timeout",
+            "temporarily unavailable",
+        ]
+        return any(p in error_lower for p in transient_patterns)
 
     def _do_provider_call(
         self,

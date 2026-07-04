@@ -198,12 +198,15 @@ gate: {"id": "n7", "type": "gate", "gate_kind": "human_approval", "prompt_templa
         # Строим промпт для LLM
         user_prompt = self._build_user_prompt(hypothesis, custom_tools_created)
 
-        # Вызываем LLM с retry на reasoning-перерасход.
+        # Вызываем LLM с retry на reasoning-перерасход и транзиентные ошибки.
         # Reasoning-модели иногда тратят весь бюджет на chain-of-thought,
         # оставляя content пустым (finish_reason=length).
+        # Локальная LLM (llama-server) иногда таймаутит на сложных задачах —
+        # повторяем с тем же max_tokens после паузы.
         start = time.time()
         response: Response | None = None
         current_max_tokens = 8192  # reasoning-моделям нужно больше (было 4096)
+        last_error: str | None = None
         for attempt in range(3):
             try:
                 response = self.llm.chat(
@@ -217,7 +220,19 @@ gate: {"id": "n7", "type": "gate", "gate_kind": "human_approval", "prompt_templa
                     json_mode=True,
                     timeout_sec=300,
                 )
+                last_error = None
             except Exception as e:
+                last_error = str(e)
+                error_str = str(e).lower()
+                # Транзиентные ошибки — retry с тем же max_tokens
+                if any(p in error_str for p in [
+                    "timeout", "timed out", "connection error",
+                    "connection reset", "429", "502", "503", "504",
+                ]):
+                    import time as _time
+                    _time.sleep(2 ** attempt)
+                    continue
+                # Нетранзиентная — сразу возвращаем ошибку
                 return BuildResult(
                     hypothesis_id=hypothesis.id,
                     dag={},
@@ -234,6 +249,17 @@ gate: {"id": "n7", "type": "gate", "gate_kind": "human_approval", "prompt_templa
 
             # Retry с увеличенным max_tokens
             current_max_tokens = min(current_max_tokens * 2, 32768)
+
+        # Если все попытки провалились с ошибкой
+        if last_error is not None and (response is None or not (response.content or "").strip()):
+            return BuildResult(
+                hypothesis_id=hypothesis.id,
+                dag={},
+                success=False,
+                steward_requests=steward_requests_log,
+                custom_tools_created=custom_tools_created,
+                error=f"LLM call failed after retries: {last_error}",
+            )
 
         # Парсим DAG
         dag = self._parse_dag(response.content)
@@ -446,8 +472,8 @@ gate: {"id": "n7", "type": "gate", "gate_kind": "human_approval", "prompt_templa
         # Проверяем python-узлы: script_ref должен разрешаться в существующий файл.
         # Готовых core-скриптов мало, и LLM нередко выдумывает несуществующие вроде
         # 'core:json_validate' — такой узел всё равно упадёт в runtime, поэтому ловим заранее.
-        # Custom-инструменты могут быть созданы Steward'ом уже после build(),
-        # поэтому для custom: не фейлим здесь (runtime проверит сам).
+        # Для custom: проверяем, что Steward создал инструмент (иначе runtime упадёт с
+        # "Cannot find script: custom:json_parser_v1", как было в реальном прогоне).
         for node in nodes:
             if node.get("type") == "python":
                 node_id = node.get("id", "?")
@@ -462,6 +488,24 @@ gate: {"id": "n7", "type": "gate", "gate_kind": "human_approval", "prompt_templa
                             f"No 'core_scripts/{name}.py' exists. "
                             f"Available core scripts: {self._available_core_scripts()}."
                         )
+                elif script_ref.startswith("custom:"):
+                    # Если Steward недоступен или не создал этот инструмент — упадём в runtime.
+                    # Ловим здесь, чтобы дать осмысленную ошибку и подсказку.
+                    if resolve_script_path(script_ref) is None:
+                        name = script_ref[7:]
+                        if self.steward is None:
+                            return (
+                                f"Python node '{node_id}' references custom script '{script_ref}', "
+                                f"but Steward is not enabled (no --steward flag). "
+                                f"Either enable Steward to create custom tools, or use only core: scripts."
+                            )
+                        else:
+                            return (
+                                f"Python node '{node_id}' references custom script '{script_ref}' "
+                                f"which was not created by Steward. "
+                                f"Check steward_requests_log for creation errors. "
+                                f"Available core scripts: {self._available_core_scripts()}."
+                            )
 
         # Проверяем entry и exit
         node_ids = {n["id"] for n in nodes}

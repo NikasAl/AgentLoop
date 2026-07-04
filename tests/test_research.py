@@ -383,13 +383,18 @@ class TestPipelineBuilder:
         result = builder.build(sample_hypothesis)
         assert result.success
 
-    def test_validate_python_node_custom_script_not_rejected(self, mock_llm, sample_hypothesis):
-        """Custom-скрипты не фейлятся в builder-валидации (Steward может создать их позже)."""
+    def test_validate_python_node_custom_script_rejected_without_steward(self, mock_llm, sample_hypothesis):
+        """Custom-скрипты без Steward должны фейлиться в builder-валидации.
+
+        Раньше custom: пропускались (Steward мог создать позже), но в реальном прогоне
+        это приводило к 'Cannot find script: custom:json_parser_v1' в runtime.
+        Теперь builder ловит это заранее с понятным сообщением.
+        """
         dag = {
             "nodes": [{
                 "id": "n1",
                 "type": "python",
-                "script_ref": "custom:latex_validator_v1",  # может не существовать в тест-окружении
+                "script_ref": "custom:latex_validator_v1",  # не существует
                 "input": {},
             }],
             "edges": [],
@@ -404,9 +409,10 @@ class TestPipelineBuilder:
             output_tokens=5,
         )
 
-        builder = PipelineBuilder(llm_provider=mock_llm, model="test")
+        builder = PipelineBuilder(llm_provider=mock_llm, model="test", steward=None)
         result = builder.build(sample_hypothesis)
-        assert result.success
+        assert not result.success
+        assert "Steward is not enabled" in (result.error or "") or "Steward" in (result.error or "")
 
     def test_validate_unsatisfied_prerequisite(self, mock_llm, sample_hypothesis):
         """Builder должен отклонять пайплайны с неудовлетворёнными prerequisites
@@ -708,8 +714,17 @@ class TestResearchOrchestrator:
             input_tokens=100,
             output_tokens=200,
         )
+        # Используем file-узел с конкретным содержанием — чтобы output_content_quality
+        # прошёл порог 0.3 (раньше 'echo hello' давало только stdout, что < 0.3).
+        out_path = tmp_path / "out.txt"
         dag = {
-            "nodes": [{"id": "n1", "type": "bash", "command": "echo hello", "timeout_sec": 5}],
+            "nodes": [{
+                "id": "n1",
+                "type": "file",
+                "operation": "write",
+                "path": str(out_path),
+                "content": "Это содержательный результат pipeline: приветствия готовы.",
+            }],
             "edges": [],
             "entry": "n1",
             "exit": "n1",
@@ -737,9 +752,11 @@ class TestResearchOrchestrator:
         )
 
         assert result.iterations_run == 1
-        # Execution должен пройти (echo hello)
-        # Score должен быть высоким (success, low cost, low latency)
-        assert result.best_score > 0.5
+        # Execution должен пройти (file write)
+        assert result.best_execution_result is not None
+        assert result.best_execution_result.success
+        # Score должен быть достаточным для сохранения skill
+        assert result.best_score >= 0.5
         assert result.skill_saved
 
     def test_run_build_failure(self, mock_llm, tmp_path):

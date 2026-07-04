@@ -291,10 +291,24 @@ class ResearchOrchestrator:
         best_result.history = history
         best_result.total_time_sec = time.time() - start_time
 
-        # Сохраняем навык если есть успех
-        if best_result.best_execution_result and best_result.best_build_result:
+        # Сохраняем навык ТОЛЬКО если:
+        #   1. Pipeline успешно выполнился (execution_success=True)
+        #   2. Composite score >= min_save_score (по умолчанию 0.5)
+        #   3. Нет threshold_blocked (максимальная метрика не провалена)
+        # Иначе — skill не сохраняем, в логе объясняем почему.
+        min_save_score = 0.5
+        should_save = (
+            best_result.best_execution_result is not None
+            and best_result.best_build_result is not None
+            and best_result.best_execution_result.success
+            and best_result.best_score >= min_save_score
+        )
+        if best_result.best_evaluation_result is not None:
+            should_save = should_save and not best_result.best_evaluation_result.feedback.get("threshold_blocked", False)
+
+        if should_save:
             skill_id = skill_id or f"skill_{task_id}_{int(time.time())}"
-            print(f"\n💾 Saving skill: {skill_id}")
+            print(f"\n💾 Saving skill: {skill_id} (score={best_result.best_score:.3f})")
             try:
                 custom_tools_dir = Path.home() / ".agentloop" / "custom_tools"
                 skill_dir = self.skill_writer.save(
@@ -314,6 +328,19 @@ class ResearchOrchestrator:
             except Exception as e:
                 print(f"   ✗ Save failed: {e}")
                 best_result.error = f"Skill save failed: {e}"
+        else:
+            # Объясняем, почему не сохраняем
+            reasons = []
+            if best_result.best_execution_result is None:
+                reasons.append("ни один pipeline не выполнился успешно")
+            elif not best_result.best_execution_result.success:
+                reasons.append("лучший pipeline завершился с ошибкой")
+            if best_result.best_score < min_save_score:
+                reasons.append(f"score {best_result.best_score:.3f} ниже минимума {min_save_score}")
+            if best_result.best_evaluation_result and best_result.best_evaluation_result.feedback.get("threshold_blocked"):
+                reasons.append("провален минимальный порог метрики (threshold_blocked)")
+            print(f"\n⏭ Skill НЕ сохранён: {', '.join(reasons)}")
+            print(f"   (нужен score >= {min_save_score} и успешное выполнение без threshold_blocked)")
 
         return best_result
 
