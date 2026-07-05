@@ -852,3 +852,73 @@ class TestResearchOrchestrator:
         assert result.iterations_run == 2
         assert len(result.history) == 2
         assert result.total_cost_usd >= 0
+
+    def test_auto_enable_steward_when_hypothesis_needs_custom_tools(self, mock_llm, tmp_path):
+        """Вариант B: если гипотеза содержит custom_tools_needed, а Steward не передан —
+        orchestrator автоматически инстанцирует его с human_approval=True.
+        Это соответствует дизайну — пользователь не должен явно включать Steward.
+        """
+        # Гипотеза с custom_tools_needed
+        hypothesis_response = Response(
+            content=json.dumps({
+                "hypotheses": [{
+                    "id": "h1",
+                    "title": "Test with custom tool",
+                    "rationale": "R",
+                    "approach": ["step1"],
+                    "model_assignments": [],
+                    "custom_tools_needed": [{
+                        "purpose": "JSON parser",
+                        "proposed_name": "json_parser_v1",
+                        "type": "python",
+                        "estimated_dependencies": [],
+                    }],
+                    "estimated": {},
+                    "risks": [],
+                }]
+            }),
+            provider="mock",
+            model="mock",
+            input_tokens=10,
+            output_tokens=50,
+        )
+        # Builder возвращает DAG без custom: ссылок (просто bash) —
+        # это симулирует случай, когда Steward создал инструмент, но Builder
+        # решил использовать core: вместо custom: в DAG.
+        # Главное — проверяем, что orchestrator НЕ упал из-за steward=None.
+        dag = {
+            "nodes": [{"id": "n1", "type": "bash", "command": "echo ok", "timeout_sec": 5}],
+            "edges": [],
+            "entry": "n1",
+            "exit": "n1",
+        }
+        builder_response = Response(
+            content=json.dumps(dag),
+            provider="mock",
+            model="mock",
+            input_tokens=10,
+            output_tokens=100,
+        )
+        mock_llm.chat.side_effect = [hypothesis_response, builder_response]
+
+        # Orchestrator БЕЗ steward (steward=None по умолчанию)
+        orch = ResearchOrchestrator(
+            work_dir=tmp_path / "work",
+            llm_provider=mock_llm,
+            skills_dir=tmp_path / "skills",
+            max_iterations=1,
+            target_score=0.5,
+        )
+        # Проверяем, что steward изначально None
+        assert orch.steward is None
+
+        result = orch.run(task_description="Test", task_id="t1")
+
+        # Pipeline должен выполниться (не упало из-за steward=None)
+        assert result.iterations_run == 1
+        # Builder должен был получить auto-Steward (внутри orchestrator)
+        # Проверяем через то, что build_result.success=True
+        assert result.best_build_result is not None
+        assert result.best_build_result.success
+        # После итерации builder.steward должен вернуться в None (восстановление)
+        assert orch.builder.steward is None

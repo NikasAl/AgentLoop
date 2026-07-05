@@ -200,7 +200,40 @@ class ResearchOrchestrator:
 
             # 3. Строим DAG
             print(f"\n🔨 Building pipeline for {selected.id}...")
-            build_result = self.builder.build(selected, task_id=task_id)
+
+            # ВАРИАНТ B: если гипотеза содержит custom_tools_needed, но Steward не передан —
+            # инстанцируем его автоматически. Это соответствует дизайну (design/README.md):
+            # Builder обращается к Steward для создания custom Python-инструментов.
+            # human_approval=True по умолчанию — safety из дизайна (каждый custom-инструмент
+            # требует ручного подтверждения перед выполнением).
+            auto_steward_enabled = False
+            if selected.custom_tools_needed and self.steward is None:
+                print(f"   ℹ Hypothesis requires {len(selected.custom_tools_needed)} custom tool(s), "
+                      f"auto-enabling Steward with HITL (human_approval=True)")
+                from ..tools import Steward as _Steward, ToolCatalog as _ToolCatalog
+                # Steward требует catalog. Если его нет — создаём автоматически.
+                steward_catalog = self.catalog
+                if steward_catalog is None:
+                    steward_catalog = _ToolCatalog()
+                    try:
+                        steward_catalog.scan_system()
+                    except Exception as e:
+                        print(f"   ⚠ ToolCatalog scan failed: {e}")
+                auto_steward = _Steward(
+                    catalog=steward_catalog,
+                    llm_provider=self.llm,
+                    human_approval=True,
+                )
+                self.builder.steward = auto_steward
+                auto_steward_enabled = True
+
+            try:
+                build_result = self.builder.build(selected, task_id=task_id)
+            finally:
+                # Восстанавливаем оригинальный steward (None) для следующих итераций
+                # если он был auto-включён. Если steward был передан изначально — оставляем.
+                if auto_steward_enabled:
+                    self.builder.steward = self.steward  # вернёт None если изначально был None
 
             # Переписываем модели в DAG на дефолтный провайдер (если задан)
             if build_result.success and self.default_provider:
