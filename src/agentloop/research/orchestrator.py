@@ -85,6 +85,7 @@ class ResearchOrchestrator:
         default_model: str | None = None,
         thinking_budget_tokens: int | None = None,
         reasoning_effort: str | None = None,
+        max_hypotheses_per_iteration: int = 3,
     ):
         self.work_dir = Path(work_dir)
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -122,6 +123,9 @@ class ResearchOrchestrator:
         # Reasoning-параметры: пробрасываются в LLM-узлы DAG через _rewrite_dag_models
         self.thinking_budget_tokens = thinking_budget_tokens
         self.reasoning_effort = reasoning_effort
+        # Сколько гипотез проверять в каждой итерации (parallel exploration).
+        # По умолчанию 3 = все сгенерированные. 1 = только первая (старое поведение).
+        self.max_hypotheses_per_iteration = max_hypotheses_per_iteration
 
     def run(
         self,
@@ -187,138 +191,155 @@ class ResearchOrchestrator:
             for h in hypothesis_set.hypotheses:
                 print(f"   - {h.id}: {h.title}")
 
-            # 2. Выбираем гипотезу
-            if self.hypothesis_selector:
-                selected = self.hypothesis_selector(hypothesis_set)
-            elif self.auto_select_hypothesis:
-                selected = hypothesis_set.hypotheses[0]
-                print(f"\n✓ Auto-selected: {selected.id}")
-            else:
-                # В реальной системе — interactive choice
-                selected = hypothesis_set.hypotheses[0]
-                print(f"\n✓ Selected (default): {selected.id}")
+            # 2. Выбираем гипотезы для проверки.
+            # ВАРИАНТ 1 (parallel exploration): проверяем ВСЕ гипотезы в итерации,
+            # не только первую. Это позволяет найти лучший pipeline, а не полагаться
+            # на удачу с h1. Для research-режима это правильный подход — мы исследуем.
+            hypotheses_to_test = hypothesis_set.hypotheses[:self.max_hypotheses_per_iteration]
+            if len(hypotheses_to_test) > 1:
+                print(f"\n🔁 Parallel exploration: testing {len(hypotheses_to_test)} hypotheses")
 
-            # 3. Строим DAG
-            print(f"\n🔨 Building pipeline for {selected.id}...")
+            # Результаты всех гипотез в этой итерации
+            iter_results: list[tuple[Hypothesis, Any, Any, Any]] = []
 
-            # ВАРИАНТ B: если гипотеза содержит custom_tools_needed, но Steward не передан —
-            # инстанцируем его автоматически. Это соответствует дизайну (design/README.md):
-            # Builder обращается к Steward для создания custom Python-инструментов.
-            # human_approval=True по умолчанию — safety из дизайна (каждый custom-инструмент
-            # требует ручного подтверждения перед выполнением).
-            auto_steward_enabled = False
-            if selected.custom_tools_needed and self.steward is None:
-                print(f"   ℹ Hypothesis requires {len(selected.custom_tools_needed)} custom tool(s), "
-                      f"auto-enabling Steward with HITL (human_approval=True)")
-                from ..tools import Steward as _Steward, ToolCatalog as _ToolCatalog
-                # Steward требует catalog. Если его нет — создаём автоматически.
-                steward_catalog = self.catalog
-                if steward_catalog is None:
-                    steward_catalog = _ToolCatalog()
-                    try:
-                        steward_catalog.scan_system()
-                    except Exception as e:
-                        print(f"   ⚠ ToolCatalog scan failed: {e}")
-                auto_steward = _Steward(
-                    catalog=steward_catalog,
-                    llm_provider=self.llm,
-                    human_approval=True,
+            for selected in hypotheses_to_test:
+                print(f"\n{'─'*40}")
+                print(f"📋 Hypothesis: {selected.id} — {selected.title}")
+                print(f"{'─'*40}")
+
+                # 3. Строим DAG
+                print(f"🔨 Building pipeline for {selected.id}...")
+
+                # ВАРИАНТ B: auto-enable Steward если hypothesis требует custom tools
+                auto_steward_enabled = False
+                if selected.custom_tools_needed and self.steward is None:
+                    print(f"   ℹ Hypothesis requires {len(selected.custom_tools_needed)} custom tool(s), "
+                          f"auto-enabling Steward with HITL (human_approval=True)")
+                    from ..tools import Steward as _Steward, ToolCatalog as _ToolCatalog
+                    steward_catalog = self.catalog
+                    if steward_catalog is None:
+                        steward_catalog = _ToolCatalog()
+                        try:
+                            steward_catalog.scan_system()
+                        except Exception as e:
+                            print(f"   ⚠ ToolCatalog scan failed: {e}")
+                    auto_steward = _Steward(
+                        catalog=steward_catalog,
+                        llm_provider=self.llm,
+                        human_approval=True,
+                    )
+                    self.builder.steward = auto_steward
+                    auto_steward_enabled = True
+
+                try:
+                    build_result = self.builder.build(selected, task_id=task_id)
+                finally:
+                    if auto_steward_enabled:
+                        self.builder.steward = self.steward
+
+                # Переписываем модели в DAG на дефолтный провайдер
+                if build_result.success and self.default_provider:
+                    self._rewrite_dag_models(build_result.dag)
+
+                if not build_result.success:
+                    print(f"   ✗ Build failed: {build_result.error}")
+                    iter_results.append((selected, build_result, None, None))
+                    history.append({
+                        "hypothesis_id": selected.id,
+                        "score": 0.0,
+                        "feedback": f"Build failed: {build_result.error}",
+                    })
+                    continue
+
+                print(f"   ✓ DAG built: {len(build_result.dag.get('nodes', []))} nodes")
+
+                # 4. Выполняем
+                print(f"▶ Executing pipeline...")
+                run_dir = self.work_dir / f"run_iter{iteration}_{selected.id}"
+                executor = PipelineExecutor(
+                    work_dir=run_dir,
+                    cost_tracker=self.cost_tracker,
+                    checkpoint_enabled=False,
                 )
-                self.builder.steward = auto_steward
-                auto_steward_enabled = True
+                execution_result = executor.execute(
+                    dag_dict=build_result.dag,
+                    task_id=task_id,
+                    hypothesis_id=selected.id,
+                    mode="research",
+                    input_vars=input_vars,
+                )
 
-            try:
-                build_result = self.builder.build(selected, task_id=task_id)
-            finally:
-                # Восстанавливаем оригинальный steward (None) для следующих итераций
-                # если он был auto-включён. Если steward был передан изначально — оставляем.
-                if auto_steward_enabled:
-                    self.builder.steward = self.steward  # вернёт None если изначально был None
+                if execution_result.success:
+                    print(f"   ✓ Execution succeeded")
+                else:
+                    print(f"   ✗ Execution failed: {list(execution_result.errors.keys())}")
+                    for node_id, error in execution_result.errors.items():
+                        print(f"      • {node_id}: {error}")
 
-            # Переписываем модели в DAG на дефолтный провайдер (если задан)
-            if build_result.success and self.default_provider:
-                self._rewrite_dag_models(build_result.dag)
+                # 5. Оцениваем
+                print(f"📊 Evaluating...")
+                evaluation_result = self.evaluator.evaluate(
+                    execution_result=execution_result,
+                    hypothesis_id=selected.id,
+                )
+                print(f"   Composite score: {evaluation_result.composite_score:.3f}")
+                for m in evaluation_result.metrics:
+                    print(f"   - {m.name}: {m.value:.3f} (weight={m.weight})")
 
-            if not build_result.success:
-                print(f"   ✗ Build failed: {build_result.error}")
+                iter_results.append((selected, build_result, execution_result, evaluation_result))
+
+                # Обновляем history
                 history.append({
                     "hypothesis_id": selected.id,
-                    "score": 0.0,
-                    "feedback": f"Build failed: {build_result.error}",
+                    "score": evaluation_result.composite_score,
+                    "feedback": "; ".join(evaluation_result.feedback.get("weaknesses", [])),
+                    "execution_success": execution_result.success,
+                    "cost_usd": execution_result.total_cost_usd,
                 })
-                continue
 
-            print(f"   ✓ DAG built: {len(build_result.dag.get('nodes', []))} nodes")
+                best_result.total_cost_usd += execution_result.total_cost_usd
 
-            # 4. Выполняем
-            print(f"\n▶ Executing pipeline...")
-            run_dir = self.work_dir / f"run_iter{iteration}_{selected.id}"
-            executor = PipelineExecutor(
-                work_dir=run_dir,
-                cost_tracker=self.cost_tracker,
-                checkpoint_enabled=False,
-            )
-            execution_result = executor.execute(
-                dag_dict=build_result.dag,
-                task_id=task_id,
-                hypothesis_id=selected.id,
-                mode="research",
-                input_vars=input_vars,
-            )
+            # 6. После проверки всех гипотез — выбираем лучший результат итерации
+            valid_results = [
+                (h, b, e, ev) for h, b, e, ev in iter_results
+                if e is not None and ev is not None
+            ]
+            if valid_results:
+                best_in_iter = max(valid_results, key=lambda x: x[3].composite_score)
+                best_h, best_b, best_e, best_ev = best_in_iter
 
-            if execution_result.success:
-                print(f"   ✓ Execution succeeded")
+                print(f"\n{'─'*40}")
+                print(f"📊 Best in iteration {iteration}: {best_h.id} (score={best_ev.composite_score:.3f})")
+                print(f"{'─'*40}")
+
+                # Обновляем global best
+                if best_ev.composite_score > best_result.best_score:
+                    best_result.best_score = best_ev.composite_score
+                    best_result.best_hypothesis_id = best_h.id
+                    best_result.best_execution_result = best_e
+                    best_result.best_evaluation_result = best_ev
+                    best_result.best_build_result = best_b
+
+                # 7. Проверяем target
+                if best_ev.composite_score >= self.target_score:
+                    print(f"\n✓ Target score {self.target_score} reached by {best_h.id}!")
+                    best_result.success = True
+                    break
+
+                print(f"\n   Best score {best_ev.composite_score:.3f} < target {self.target_score}")
+                weaknesses = best_ev.feedback.get("weaknesses", [])
+                if weaknesses:
+                    print(f"   ⚠ Причины низкого score (лучшая гипотеза {best_h.id}):")
+                    for w in weaknesses[:3]:
+                        print(f"      • {w}")
+                # Summary всех гипотез итерации
+                if len(valid_results) > 1:
+                    print(f"\n   📋 Все гипотезы итерации:")
+                    for h, _, _, ev in valid_results:
+                        marker = " ← best" if h.id == best_h.id else ""
+                        print(f"      • {h.id}: score={ev.composite_score:.3f}{marker}")
             else:
-                # Печатаем не только ключи, но и тексты ошибок упавших узлов —
-                # иначе (как было раньше) реальная причина скрыта за ['n1'].
-                print(f"   ✗ Execution failed: {list(execution_result.errors.keys())}")
-                for node_id, error in execution_result.errors.items():
-                    print(f"      • {node_id}: {error}")
-
-            # 5. Оцениваем
-            print(f"\n📊 Evaluating...")
-            evaluation_result = self.evaluator.evaluate(
-                execution_result=execution_result,
-                hypothesis_id=selected.id,
-            )
-            print(f"   Composite score: {evaluation_result.composite_score:.3f}")
-            for m in evaluation_result.metrics:
-                print(f"   - {m.name}: {m.value:.3f} (weight={m.weight})")
-
-            # Обновляем history
-            history.append({
-                "hypothesis_id": selected.id,
-                "score": evaluation_result.composite_score,
-                "feedback": "; ".join(evaluation_result.feedback.get("weaknesses", [])),
-                "execution_success": execution_result.success,
-                "cost_usd": execution_result.total_cost_usd,
-            })
-
-            # Обновляем best
-            if evaluation_result.composite_score > best_result.best_score:
-                best_result.best_score = evaluation_result.composite_score
-                best_result.best_hypothesis_id = selected.id
-                best_result.best_execution_result = execution_result
-                best_result.best_evaluation_result = evaluation_result
-                best_result.best_build_result = build_result
-
-            best_result.total_cost_usd += execution_result.total_cost_usd
-
-            # 6. Проверяем target
-            if evaluation_result.composite_score >= self.target_score:
-                print(f"\n✓ Target score {self.target_score} reached!")
-                best_result.success = True
-                break
-
-            print(f"\n   Score {evaluation_result.composite_score:.3f} < target {self.target_score}")
-            # Сначала weaknesses (точные причины: какой узел и почему упал),
-            # затем suggestions — иначе корневая причина скрыта.
-            weaknesses = evaluation_result.feedback.get("weaknesses", [])
-            if weaknesses:
-                print(f"   ⚠ Причины низкого score:")
-                for w in weaknesses[:3]:
-                    print(f"      • {w}")
-            print(f"   💡 Suggestions: {evaluation_result.feedback.get('suggestions_for_next_iteration', [])[:2]}")
+                print(f"\n   ✗ Все гипотезы в итерации {iteration} провалились на этапе build")
 
         best_result.iterations_run = min(iteration, self.max_iterations)
         best_result.history = history

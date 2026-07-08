@@ -93,6 +93,9 @@ def main():
                              "Поддерживается llama-server для gemma-4, qwen-3, deepseek-r1.")
     parser.add_argument("--reasoning-effort", choices=["low", "medium", "high"], default=None,
                         help="Уровень reasoning для моделей, поддерживающих параметр (OpenAI o1, OpenRouter).")
+    parser.add_argument("--max-hypotheses", type=int, default=3,
+                        help="Сколько гипотез проверять в каждой итерации (parallel exploration). "
+                             "3 = все (default), 1 = только первая (быстро, но менее тщательно).")
     parser.add_argument("--verbose", action="store_true", help="Подробный вывод")
 
     args = parser.parse_args()
@@ -203,6 +206,13 @@ def main():
 
     cost_tracker = CostTracker()
 
+    # По умолчанию $INPUT = описание задачи.
+    # Это позволяет пайплайнам использовать {$INPUT} в user_prompt_template
+    # и получать осмысленный текст вместо пустоты.
+    # Если пользователь явно передал --input с $INPUT — не перезаписываем.
+    if "$INPUT" not in input_vars:
+        input_vars["$INPUT"] = args.task
+
     print(f"\n📋 Задача: {args.task}")
     print(f"   Task ID: {task_id}")
     print(f"   Work dir: {work_dir}")
@@ -230,6 +240,7 @@ def main():
         default_model=model,
         thinking_budget_tokens=args.thinking_budget,
         reasoning_effort=args.reasoning_effort,
+        max_hypotheses_per_iteration=args.max_hypotheses,
     )
 
     # ─── Запуск ─────────────────────────────────────────────

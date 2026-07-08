@@ -246,6 +246,9 @@ class Evaluator:
             text = str(output).strip()
             if not text or text in ("{}", "[]", "null", "None"):
                 return 0.0, f"Output пустой: {text[:50]!r}"
+            # Проверяем error-паттерн в строкке
+            if self._looks_like_error(text):
+                return 0.05, f"Output выглядит как error: {text[:100]!r}"
             if len(text) < 50:
                 return 0.3, f"Output слишком короткий ({len(text)} символов)"
             return 0.7, f"Output содержательный ({len(text)} символов)"
@@ -253,6 +256,21 @@ class Evaluator:
         # dict
         if not output:
             return 0.0, "Output пустой dict {}"
+
+        # Проверяем error-паттерн в dict
+        # LLM в json_mode часто возвращает {"error": "...", "message": "..."}
+        # когда не может выполнить задачу (нет входных данных, placeholders и т.д.)
+        error_indicators = ("error", "Error", "ERROR")
+        has_error_field = any(k in output for k in error_indicators)
+        if has_error_field:
+            error_text = ""
+            for k in error_indicators:
+                if k in output and isinstance(output[k], str):
+                    error_text = output[k][:150]
+                    break
+            if "message" in output and isinstance(output["message"], str):
+                error_text = error_text or output["message"][:150]
+            return 0.05, f"Output содержит error: {error_text!r}"
 
         # Сканируем значения
         meaningful_fields = 0
@@ -274,6 +292,9 @@ class Evaluator:
                 elif value.strip() in ("{}", "[]"):
                     empty_fields += 1
                 else:
+                    # Проверяем, не является ли строка вложенным error-сообщением
+                    if self._looks_like_error(value):
+                        return 0.05, f"Output content выглядит как error: {value[:100]!r}"
                     meaningful_fields += 1
                     total_chars += len(value)
 
@@ -299,6 +320,44 @@ class Evaluator:
         score += min(0.3, total_chars / 1000.0 * 0.3)  # до +0.3 за объём
 
         return min(1.0, score), f"{meaningful_fields} содержательных полей, {total_chars} символов"
+
+    @staticmethod
+    def _looks_like_error(text: str) -> bool:
+        """Детектит error-паттерн в строке.
+
+        LLM в json_mode возвращает сообщения об ошибках когда:
+        - Нет входных данных ('No text provided', 'No topic provided')
+        - Неразрешённые плейсхолдеры ('Placeholders detected')
+        - Не может выполнить задачу ('cannot generate', 'unable to')
+
+        Такие output — не реальный результат, а жалоба модели.
+        """
+        if not text:
+            return False
+        text_lower = text.lower()
+        error_patterns = [
+            '"error"',
+            "'error'",
+            "no text provided",
+            "no topic provided",
+            "no input provided",
+            "no content provided",
+            "placeholders detected",
+            "template with variables",
+            "please provide",
+            "cannot generate",
+            "unable to generate",
+            "unable to process",
+            "i cannot",
+            "i can't",
+            "i am unable",
+            "not enough information",
+            "insufficient information",
+            "missing required",
+            "please paste",
+            "please specify",
+        ]
+        return any(p in text_lower for p in error_patterns)
 
     def _generate_feedback(
         self,

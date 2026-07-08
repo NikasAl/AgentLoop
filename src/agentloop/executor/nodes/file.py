@@ -261,9 +261,19 @@ class FileNode(BaseNode):
                 error=f"from_collection must resolve to list, got {type(collection_ref)}",
             )
 
-        # Path template: резолвим $WORKDIR и {node.field}, но оставляем {item.field} для подстановки
+        # Path template: резолвим ТОЛЬКО $VARS ($WORKDIR, $RUN_ID и т.д.),
+        # но НЕ {node.output.field} и НЕ {item_field}.
+        # {item_field} плейсхолдеры (например {variant_id}) подставляются ниже в цикле.
+        # Если использовать общий resolver, он съест {variant_id} (вернёт "" для unknown).
         path_tmpl = self.path_template or ""
-        path_tmpl = resolver.resolve(path_tmpl)
+        # Подставляем только $VARS через простой regex
+        import re
+        dollar_pattern = re.compile(r"\$([A-Z_][A-Z0-9_]*)")
+        def dollar_repl(m: re.Match) -> str:
+            name = m.group(1)
+            val = state.runtime_vars.get(name, m.group(0))
+            return str(val) if not isinstance(val, Path) else str(val)
+        path_tmpl = dollar_pattern.sub(dollar_repl, path_tmpl)
 
         written: list[str] = []
 

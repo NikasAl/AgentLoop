@@ -77,7 +77,7 @@ class VariableResolver:
         """Разрешает одну переменную вида 'node_id.output.field'."""
         parts = path.strip().split(".")
         if len(parts) < 2:
-            return f"{{{path}}}"  # не смогли разрешить
+            return ""  # не смогли разрешить → пусто
 
         node_id = parts[0]
         field_path = parts[1:]
@@ -85,7 +85,7 @@ class VariableResolver:
         # Достаём output узла
         node_output = self.state.outputs.get(node_id)
         if node_output is None:
-            return f"{{{path}}}"
+            return ""
 
         # Если field_path начинается с "output" — пропускаем его
         # (формат {node.output.field} совместим с прямым доступом к полям)
@@ -102,7 +102,7 @@ class VariableResolver:
             if isinstance(current, dict) and field in current:
                 current = current[field]
             else:
-                return f"{{{path}}}"
+                return ""  # поля нет → пусто, не literal
 
         # Применяем фильтр если есть
         if filter_str:
